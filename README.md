@@ -1,7 +1,5 @@
 # Jellyfin Movies – Configuration
 
-This project separates secrets and defaults into config files so you can safely publish the code.
-
 ## Files
 
 - `.env` (local, not committed) / `.env.example` (template): `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID`, `TMDB_API_KEY`, `SERVER_PORT`. Copy `.env.example` to `.env` and fill in your values.

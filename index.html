@@ -1,0 +1,436 @@
+﻿<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Ranking Tool</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="accent-person1">
+  <div class="app-container">
+    <header>
+      <div class="tab-bar">
+        <button class="tab active" id="tabRanker" type="button">Ranking</button>
+        <button class="tab" id="tabSwiper" type="button">Swipe</button>
+        <div class="header-actions">
+          <button id="settingsBtn" class="icon-btn" aria-label="Einstellungen">⚙</button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <!-- Ranker Section -->
+      <div id="rankerSection">
+        <section id="setup" class="card">
+          <div class="page-subtitle">
+            <h2>Setup</h2>
+          </div>
+
+          <div class="field-group">
+            <label for="numPersonsSelect" id="personsLabel">Anzahl der abstimmenden Personen:</label>
+            <div class="row">
+              <select id="numPersonsSelect">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+              </select>
+              <button id="applyPersonsBtn" class="btn secondary">Uebernehmen</button>
+            </div>
+            <p class="hint warn">Wenn du die Anzahl aenderst, werden bisherige Stimmen zurueckgesetzt.</p>
+        </div>
+
+          <div class="filters-row">
+            <div class="field-group">
+              <label id="filterLabel">Filter</label>
+              <div class="multi-select" id="filterDropdown">
+                <button type="button" class="multi-select-toggle" id="filterToggle">Played &amp; Unplayed</button>
+                <div class="multi-select-menu hidden" id="filterMenu">
+                  <label><input type="checkbox" value="IsUnplayed" checked> Unplayed</label>
+                  <label><input type="checkbox" value="IsPlayed" checked> Played</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label id="runtimeLabel">Laufzeit</label>
+              <div class="range-dropdown" id="runtimeDropdown">
+                <button type="button" class="multi-select-toggle" id="runtimeToggle">20 - 300</button>
+                <div class="multi-select-menu hidden" id="runtimeMenu">
+                  <div class="range-row">
+                    <input type="range" id="runtimeMin" min="20" max="300" value="20">
+                    <input type="range" id="runtimeMax" min="20" max="300" value="300">
+                  </div>
+                  <div class="row">
+                    <input type="number" id="runtimeMinNum" min="20" max="300" value="20" aria-label="Laufzeit Min">
+                    <input type="number" id="runtimeMaxNum" min="20" max="300" value="300" aria-label="Laufzeit Max">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label id="criticLabel">IMDB Rating</label>
+              <div class="range-dropdown" id="criticDropdown">
+                <button type="button" class="multi-select-toggle" id="criticToggle">0 - 10</button>
+                <div class="multi-select-menu hidden" id="criticMenu">
+                  <div class="range-row">
+                    <input type="range" id="criticMin" min="0" max="10" step="0.1" value="0">
+                    <input type="range" id="criticMax" min="0" max="10" step="0.1" value="10">
+                  </div>
+                  <div class="row">
+                    <input type="number" id="criticMinNum" min="0" max="10" step="0.1" value="0" aria-label="Critic Min">
+                    <input type="number" id="criticMaxNum" min="0" max="10" step="0.1" value="10" aria-label="Critic Max">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label id="releaseLabel">Release</label>
+              <div class="range-dropdown" id="yearDropdown">
+                <button type="button" class="multi-select-toggle" id="yearToggle">1950 - aktuell</button>
+                <div class="multi-select-menu hidden" id="yearMenu">
+                  <div class="range-row">
+                    <input type="range" id="yearMin" min="1950" max="2100" value="1950">
+                    <input type="range" id="yearMax" min="1950" max="2100" value="2100">
+                  </div>
+                  <div class="row">
+                    <input type="number" id="yearMinNum" min="1950" max="2100" value="1950" aria-label="Jahr Min">
+                    <input type="number" id="yearMaxNum" min="1950" max="2100" value="2100" aria-label="Jahr Max">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="field-group filter-4k">
+              <label for="filter4kMain">4k</label>
+              <div class="checkbox-row">
+                <input type="checkbox" id="filter4kMain" value="Is4K">
+              </div>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <div class="range-dropdown r-dropdown" id="rDropdown">
+              <button type="button" class="multi-select-toggle" id="rToggle">Faktor r: 2</button>
+              <div class="multi-select-menu hidden" id="rMenu">
+                <div class="range-row">
+                  <input type="range" id="rSlider" min="2" max="10" value="2">
+                </div>
+                <div class="row">
+                  <input type="number" id="rInput" min="2" max="10" value="2" aria-label="Faktor r">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <div class="row filters-actions">
+              <div class="left-actions">
+                <button id="fetchMoviesBtn" class="btn primary">Filme laden</button>
+                <button id="loadMoviesBtn" class="btn secondary">CSV laden</button>
+              </div>
+              <div class="right-actions">
+                <button id="resetFiltersBtn" class="btn primary">Filter zuruecksetzen</button>
+              </div>
+            </div>
+            <div class="row confirm-row">
+              <button id="confirmSetupBtn" class="btn primary" type="button">Confirm</button>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label id="activePersonLabel">Aktive Person</label>
+            <div id="personButtons" class="person-button-group"></div>
+          </div>
+
+          <p id="status" class="status-text center"></p>
+        </section>
+
+        <section id="voteSection" class="card hidden">
+          <div class="card-header">
+            <h2>Vergleich</h2>
+            <span class="pill" id="voteHeaderInfo">
+              <span id="currentPersonLabel">Person 1</span> • <span id="movieCountLabel">0</span> Filme
+            </span>
+          </div>
+          <p class="hint">Klicke welcher Film dir besser gefaellt.</p>
+          <div id="pairContainer">
+            <div class="movie-card" id="leftCard" role="button" tabindex="0">
+              <div class="movie-media"><img id="leftImage" src="" alt=""></div>
+              <div class="movie-title" id="leftTitle"></div>
+            </div>
+            <div class="movie-card" id="rightCard" role="button" tabindex="0">
+              <div class="movie-media"><img id="rightImage" src="" alt=""></div>
+              <div class="movie-title" id="rightTitle"></div>
+            </div>
+          </div>
+          <div class="progress-wrapper">
+            <div class="progress-label" id="progressLabel">0 / 0</div>
+            <div class="progress-track">
+              <div class="progress-bar" id="progressBar"></div>
+            </div>
+          </div>
+          <div id="personProgress" class="person-progress"></div>
+          <p id="comparisonCount" class="status-text"></p>
+          <div class="actions"><button id="showResultsBtn" class="btn primary">Ergebnisse anzeigen</button></div>
+        </section>
+
+        <section id="resultsSection" class="card hidden">
+          <div class="page-subtitle">
+            <h2>Ergebnisse</h2>
+          </div>
+          <div id="top10Card" class="card nested">
+            <h3>Top 10</h3>
+            <div id="top10Container"></div>
+            <div class="actions">
+              <button id="downloadTop10Btn" class="btn primary">Top 10 Download</button>
+            </div>
+          </div>
+          <details id="rankingCard" class="card nested collapsible">
+            <summary>Rangliste</summary>
+            <div class="actions">
+              <button id="downloadRankingCsvBtn" class="btn secondary" type="button">CSV Download</button>
+            </div>
+            <div class="table-wrapper"><table id="tableAverage"></table></div>
+          </details>
+        </section>
+      </div>
+
+      <!-- Swiper Section -->
+      <div id="swiperSection" class="hidden">
+        <section class="card">
+          <div class="page-subtitle">
+            <h2 id="swipeSetupTitle">Setup</h2>
+          </div>
+          <div class="swiper-controls">
+            <div class="field-group">
+              <label id="swiperPersonsLabel">Personen (2-5)</label>
+              <div class="row">
+                <select id="swiperPersonSelect">
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                </select>
+                <button id="applySwiperPersonsBtn" class="btn secondary" type="button">Uebernehmen</button>
+              </div>
+              <p class="hint warn">Wenn du die Anzahl aenderst, werden bisherige Stimmen zurueckgesetzt.</p>
+            </div>
+            <div class="field-group">
+              <label for="swipeSourceMode">Quelle</label>
+              <select id="swipeSourceMode">
+                <option value="manual">Manuell</option>
+                <option value="filtered">Auto</option>
+              </select>
+            </div>
+
+            <div id="swipeManualBlock">
+              <div class="field-group">
+                <label id="addMoviesLabel" for="movieInput">Filme hinzufuegen</label>
+                <div class="row manual-add">
+                  <div class="wide-input-wrap">
+                    <input id="movieInput" class="wide-input" placeholder="Titel eingeben..." autocomplete="off">
+                    <div id="movieSuggestList" class="suggest-list hidden"></div>
+                  </div>
+                  <button id="addMovieBtn" class="btn secondary" type="button">Hinzufuegen</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="swipeFilteredBlock" class="hidden">
+              <div class="filters-row">
+                <div class="field-group">
+                  <label>Filter</label>
+                  <div class="multi-select" id="swFilterDropdown">
+                    <button type="button" class="multi-select-toggle" id="swFilterToggle">Played &amp; Unplayed</button>
+                    <div class="multi-select-menu hidden" id="swFilterMenu">
+                      <label><input type="checkbox" id="swFilterUnplayed" value="IsUnplayed" checked> Unplayed</label>
+                      <label><input type="checkbox" id="swFilterPlayed" value="IsPlayed" checked> Played</label>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <label>Laufzeit</label>
+                  <div class="range-dropdown" id="swRuntimeDropdown">
+                    <button type="button" class="multi-select-toggle" id="swRuntimeToggle">20 - 300</button>
+                    <div class="multi-select-menu hidden" id="swRuntimeMenu">
+                      <div class="range-row">
+                        <input type="range" id="swRuntimeMin" min="20" max="300" value="20">
+                        <input type="range" id="swRuntimeMax" min="20" max="300" value="300">
+                      </div>
+                      <div class="row">
+                        <input type="number" id="swRuntimeMinNum" min="20" max="300" value="20" aria-label="Laufzeit Min">
+                        <input type="number" id="swRuntimeMaxNum" min="20" max="300" value="300" aria-label="Laufzeit Max">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <label>IMDB Rating</label>
+                  <div class="range-dropdown" id="swCriticDropdown">
+                    <button type="button" class="multi-select-toggle" id="swCriticToggle">0 - 10</button>
+                    <div class="multi-select-menu hidden" id="swCriticMenu">
+                      <div class="range-row">
+                        <input type="range" id="swCriticMin" min="0" max="10" step="0.1" value="0">
+                        <input type="range" id="swCriticMax" min="0" max="10" step="0.1" value="10">
+                      </div>
+                      <div class="row">
+                        <input type="number" id="swCriticMinNum" min="0" max="10" step="0.1" value="0" aria-label="Critic Min">
+                        <input type="number" id="swCriticMaxNum" min="0" max="10" step="0.1" value="10" aria-label="Critic Max">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <label>Release</label>
+                  <div class="range-dropdown" id="swYearDropdown">
+                    <button type="button" class="multi-select-toggle" id="swYearToggle">1950 - aktuell</button>
+                    <div class="multi-select-menu hidden" id="swYearMenu">
+                      <div class="range-row">
+                        <input type="range" id="swYearMin" min="1950" max="2100" value="1950">
+                        <input type="range" id="swYearMax" min="1950" max="2100" value="2100">
+                      </div>
+                      <div class="row">
+                        <input type="number" id="swYearMinNum" min="1950" max="2100" value="1950" aria-label="Jahr Min">
+                        <input type="number" id="swYearMaxNum" min="1950" max="2100" value="2100" aria-label="Jahr Max">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <label for="swMaxMovies">Max Filme</label>
+                  <div class="range-inline">
+                    <input type="range" id="swMaxMovies" min="0" max="300" step="10" value="0">
+                    <span id="swMaxMoviesLabel">Alle</span>
+                  </div>
+                </div>
+
+                <div class="field-group filter-4k">
+                  <label for="swFilter4kInline">4k</label>
+                  <div class="checkbox-row">
+                    <input type="checkbox" id="swFilter4kInline" value="Is4K">
+                  </div>
+                </div>
+              </div>
+              <div class="row filters-actions swipe-actions-row">
+                <div class="left-actions">
+                  <button id="swLoadFilteredBtn" class="btn primary" type="button">Gefilterte Liste laden</button>
+                  <button id="swResetFiltersBtn" class="btn secondary" type="button">Reset</button>
+                </div>
+              </div>
+              <p class="status-text" id="swipeFilteredStatus"></p>
+            </div>
+
+            <details class="card nested" id="selectedMoviesWrapManual">
+              <summary>Manual List</summary>
+              <div id="selectedMoviesManual" class="tag-list"></div>
+            </details>
+            <details class="card nested" id="selectedMoviesWrapAuto">
+              <summary>Auto List</summary>
+              <div id="selectedMoviesAuto" class="tag-list"></div>
+            </details>
+            <div class="actions split">
+              <button id="confirmSwipeBtn" class="btn primary" type="button">Confirm</button>
+              <button id="swClearListBtn" class="btn secondary" type="button">Liste leeren</button>
+            </div>
+            <div class="field-group">
+              <label id="swiperActivePersonLabel">Aktive Person</label>
+              <div class="person-button-group" id="swiperPersonButtons"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="swipeDeckSection" class="card hidden">
+          <div class="swipe-area">
+            <button id="swipeNoBtn" class="swipe-btn swipe-btn-left" aria-label="Nein">&#x2715;</button>
+            <div id="swipeCard" class="swipe-card" role="button" aria-label="Swipe Karte">
+              <div class="swipe-card-body">
+                <div class="swipe-card-title" id="swipeTitle">Bitte Filme hinzufuegen</div>
+              </div>
+            </div>
+            <button id="swipeYesBtn" class="swipe-btn swipe-btn-right" aria-label="Ja">&#x2665;</button>
+          </div>
+          <div id="swipeProgress" class="swipe-progress hidden">
+            <div id="swipeProgressLabel" class="progress-label"></div>
+            <div class="progress-track">
+              <div id="swipeProgressBar" class="progress-bar"></div>
+            </div>
+          </div>
+          <p id="swipeStatus" class="status-text"></p>
+          <div class="match-list card nested">
+            <h3>Matches</h3>
+            <div id="matchList" class="match-list-grid"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="confirmOverlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h3 id="confirmTitle">Confirm</h3>
+      <p id="confirmMessage">Are you sure?</p>
+      <div class="modal-actions">
+        <button id="confirmCancel" class="btn secondary" type="button">Cancel</button>
+        <button id="confirmOk" class="btn primary" type="button">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="matchOverlay" class="modal-overlay hidden">
+    <div class="modal match-modal">
+      <h3 id="matchHeading">Pura Vida, a Match!</h3>
+      <img id="matchPoster" alt="Match Poster">
+      <div id="matchTitle" class="match-title">Titel</div>
+      <div class="modal-actions">
+        <button id="matchContinue" class="btn primary" type="button">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settingsOverlay" class="modal-overlay hidden">
+        <div class="modal">
+          <button class="modal-close" id="settingsClose" aria-label="Schliessen">×</button>
+          <h3>Einstellungen</h3>
+      <div class="field-group">
+        <label for="uiLanguageSelect">Sprache der Oberflaeche</label>
+        <select id="uiLanguageSelect">
+          <option value="de">Deutsch</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+          <div class="field-group">
+            <label for="titleLanguageSelect">Sprache der Filmtitel</label>
+            <select id="titleLanguageSelect">
+              <option value="en">English</option>
+              <option value="de">Deutsch</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label>Theme</label>
+            <button id="toggleThemeBtn" class="theme-toggle" aria-label="Theme wechseln">
+              <span class="icon sun">&#9728;</span>
+              <span class="icon moon">&#9790;</span>
+            </button>
+          </div>
+          <div class="modal-actions">
+            <button id="settingsCancel" class="btn secondary" type="button">Cancel</button>
+            <button id="resetAllBtn" class="btn secondary" type="button">Reset</button>
+            <button id="settingsSave" class="btn primary" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "jellyfinUrl": "http://localhost:8096",
+  "outputCsv": "movies.csv",
+  "posterDir": "images",
+  "stateFile": "state.json",
+  "swipeStateFile": "swipe_state.json",
+  "baseRating": 1500,
+  "defaultR": 2,
+  "host": "0.0.0.0",
+  "port": 5000,
+  "allowedOrigins": ["*"],
+  "assetBase": ""
+}

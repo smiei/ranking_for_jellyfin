@@ -1,0 +1,25 @@
+{
+  "api": {
+    "base": "http://192.168.178.28:5000",
+    "port": 5000
+  },
+  "ui": {
+    "defaultTab": "ranker"
+  },
+  "ranker": {
+    "defaultFilters": ["IsUnplayed", "IsPlayed"],
+    "include4k": false,
+    "runtime": { "min": 20, "max": 300 },
+    "critic": { "min": 0, "max": 10, "step": 0.1 },
+    "year": { "min": 1950, "max": "current" },
+    "defaultR": 2
+  },
+  "swipe": {
+    "defaultFilters": ["IsUnplayed", "IsPlayed"],
+    "include4k": false,
+    "runtime": { "min": 20, "max": 300 },
+    "critic": { "min": 0, "max": 10, "step": 0.1 },
+    "year": { "min": 1950, "max": "current" },
+    "pollMs": 5000
+  }
+}

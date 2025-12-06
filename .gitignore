@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.pyc
+*.tmp
+*.log
+
+# Runtime/output data
+images/
+movies.csv
+state.json
+swipe_state.json
+backloggd_backlog.csv
+backlogged/
+
+# Local scratch files
+script_fix.tmp
+script_tmp.js

@@ -2010,7 +2010,7 @@ async function loadSwipeFilteredList() {
     const existing = new Set(manual.map(m => m.title));
     let autoList = (movies || []).map(m => ({
       title: m.title,
-      display: m.year ? `${m.display || m.title} (${m.year})` : (m.display || m.title),
+      display: formatTitleWithYear(m),
       image: m.image || '',
       imageAbsolute: resolveMovieImage({ image: m.image || '' }),
       addedBy: adder,
@@ -2118,6 +2118,23 @@ function shuffleArray(arr) {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+function extractYearFromText(text) {
+  if (!text) return null;
+  const match = /\((\d{4})\)\s*$/.exec(text);
+  if (match) {
+    const yr = parseInt(match[1], 10);
+    if (!isNaN(yr)) return yr;
+  }
+  return null;
+}
+
+function formatTitleWithYear(movie) {
+  if (!movie) return '';
+  const base = movie.display || movie.title || '';
+  const year = movie.year || extractYearFromText(base);
+  return year ? `${base.replace(/\s*\(\d{4}\)\s*$/, '')} (${year})` : base;
 }
 
 function getSwipeMovieByTitle(title) {

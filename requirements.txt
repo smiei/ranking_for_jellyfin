@@ -1,0 +1,12 @@
+#!/usr/bin/env python
+# Install all with:
+#   pip install -r requirements.txt
+# Or one-liner:
+#   pip install Flask Flask-Cors requests pystray Pillow pyinstaller
+
+Flask
+Flask-Cors
+requests
+pystray
+Pillow
+pyinstaller

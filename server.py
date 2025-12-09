@@ -2,11 +2,12 @@ import csv
 import glob
 import json
 import math
+import random
 import os
 import re
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory
@@ -144,6 +145,100 @@ def clear_poster_dir() -> None:
             except PermissionError:
                 pass
     os.makedirs(POSTER_DIR, exist_ok=True)
+
+
+def normalize_image_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def build_image_lookup() -> Dict[str, str]:
+    lookup: Dict[str, str] = {}
+    if not os.path.isdir(POSTER_DIR):
+        return lookup
+    for fname in os.listdir(POSTER_DIR):
+        path = os.path.join(POSTER_DIR, fname)
+        if not os.path.isfile(path):
+            continue
+        key = normalize_image_key(Path(fname).stem)
+        if key:
+            lookup[key] = fname
+    return lookup
+
+
+def match_image_for_title(title: str, lookup: Dict[str, str]) -> Optional[str]:
+    if not title:
+        return None
+    safe = sanitize_filename(title)
+    cleaned = re.sub(r"[’']", "", safe)
+    candidates = [
+        safe,
+        safe.replace(" ", "_"),
+        safe.replace(" ", ""),
+        cleaned,
+        cleaned.replace(" ", "_"),
+        cleaned.replace(" ", ""),
+    ]
+    for cand in candidates:
+        key = normalize_image_key(cand)
+        if key and key in lookup:
+            return lookup[key]
+    return None
+
+
+def load_movies_from_csv() -> Dict[str, Any]:
+    path = Path(OUTPUT_CSV)
+    if not path.is_file():
+        raise FileNotFoundError(f"{OUTPUT_CSV} not found")
+
+    titles: List[str] = []
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for idx, row in enumerate(reader):
+            if not row:
+                continue
+            title = (row[0] or "").strip()
+            if idx == 0 and title.lower() == "title":
+                continue
+            if title:
+                titles.append(title)
+
+    if not titles:
+        raise ValueError("CSV enthaelt keine Titel")
+
+    image_lookup = build_image_lookup()
+    seen: Set[str] = set()
+    movies: List[Dict[str, Any]] = []
+    for title in titles:
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        image = match_image_for_title(title, image_lookup) or ""
+        movies.append({"title": title, "display": title, "image": image, "source": "csv"})
+
+    ratings = base_ratings_from_movies(movies)
+    existing_state = load_state() or {}
+    person_count = max(1, int(existing_state.get("personCount") or 1))
+    r_factor = max(DEFAULT_R, int(existing_state.get("rFactor") or DEFAULT_R))
+    state = {
+        "movies": movies,
+        "ratings": ratings,
+        "comparisonCount": {},
+        "totalVotes": 0,
+        "personCount": person_count,
+        "rFactor": r_factor,
+        "filters": existing_state.get("filters") or [],
+        "runtimeMin": existing_state.get("runtimeMin"),
+        "runtimeMax": existing_state.get("runtimeMax"),
+        "criticMin": existing_state.get("criticMin"),
+        "criticMax": existing_state.get("criticMax"),
+        "yearMin": existing_state.get("yearMin"),
+        "yearMax": existing_state.get("yearMax"),
+        "rankerConfirmed": False,
+    }
+    state.update(EMPTY_RANK_STATE_EXTRA)
+    save_state(state)
+    return state
 
 
 def minutes_to_ticks(val: Optional[float]) -> Optional[int]:
@@ -495,6 +590,7 @@ def generate():
     critic_max = data.get("criticMax")
     year_min = data.get("yearMin")
     year_max = data.get("yearMax")
+    max_movies = int(data.get("maxMovies") or 0)
     person_count = data.get("personCount") or 1
     r_factor = data.get("rFactor") or DEFAULT_R
     lang = (data.get("lang") or "en").lower()
@@ -507,6 +603,8 @@ def generate():
     try:
         clear_poster_dir()
         movies_raw = fetch_movies(filters, runtime_min, runtime_max, critic_min, critic_max, year_min, year_max)
+        if max_movies > 0 and len(movies_raw) > max_movies:
+            movies_raw = random.sample(movies_raw, max_movies)
         # CSV speichern
         with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
@@ -557,6 +655,17 @@ def generate():
         }
         save_state(state)
         return jsonify({"ok": True, "count": len(movie_list)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/load-csv")
+def load_csv_endpoint():
+    try:
+        state = load_movies_from_csv()
+        return jsonify({"ok": True, "count": len(state.get("movies") or []), "state": state})
+    except FileNotFoundError:
+        return jsonify({"ok": False, "error": f"{OUTPUT_CSV} not found"}), 404
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

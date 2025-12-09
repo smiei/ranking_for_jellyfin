@@ -17,6 +17,7 @@ let totalVotes = 0;
 let targetVotes = 0;
 let personTargetVotes = 0;
 let rankerConfirmed = false;
+let csvFallbackAttempted = false;
 // Swiper state
 let swipeSuggestions = [];
 let swipeSuggestionsMap = {};
@@ -39,6 +40,7 @@ let matchQueue = [];
 let seenMatches = new Set();
 let matchModalOpen = false;
 let swMaxMovies = Infinity;
+let rankMaxMovies = Infinity;
 let uiLanguage = '';
 let titleLanguage = '';
 let translations = {};
@@ -524,7 +526,7 @@ const swYearMax = document.getElementById('swYearMax');
 const swYearMinNum = document.getElementById('swYearMinNum');
 const swYearMaxNum = document.getElementById('swYearMaxNum');
 const swMaxMoviesInput = document.getElementById('swMaxMovies');
-const swMaxMoviesLabel = document.getElementById('swMaxMoviesLabel');
+const rankMaxMoviesInput = document.getElementById('rankMaxMovies');
 const swLoadFilteredBtn = document.getElementById('swLoadFilteredBtn');
 const swResetFiltersBtn = document.getElementById('swResetFiltersBtn');
 const swipeFilteredStatus = document.getElementById('swipeFilteredStatus');
@@ -616,7 +618,7 @@ async function init() {
   await initLanguages();
   bindEvents();
   setDefaults();
-  fetchState(true);
+  fetchState(true, { allowCsvFallback: true });
 }
 
 async function initLanguages() {
@@ -627,7 +629,7 @@ async function initLanguages() {
 }
 
 function bindEvents() {
-  loadMoviesBtn?.addEventListener('click', () => fetchState(true));
+  loadMoviesBtn?.addEventListener('click', loadMoviesFromCsv);
   fetchMoviesBtn?.addEventListener('click', () => fetchAndLoadMovies());
   resetFiltersBtn?.addEventListener('click', resetFilters);
   showResultsBtn?.addEventListener('click', showResults);
@@ -677,19 +679,25 @@ function bindEvents() {
     rInput.addEventListener('input', () => syncR(parseInt(rInput.value, 10)));
   }
 
-  if (swMaxMoviesInput && swMaxMoviesLabel) {
+  if (swMaxMoviesInput) {
     const updateSwMaxLabel = () => {
       const val = parseInt(swMaxMoviesInput.value, 10);
-      if (val === 0) {
-        swMaxMovies = Infinity;
-        swMaxMoviesLabel.textContent = getT().allLabel || 'Alle';
-      } else {
-        swMaxMovies = val;
-        swMaxMoviesLabel.textContent = val.toString();
-      }
+      swMaxMovies = !val ? Infinity : Math.max(0, val);
     };
     swMaxMoviesInput.addEventListener('input', updateSwMaxLabel);
+    swMaxMoviesInput.addEventListener('change', updateSwMaxLabel);
     updateSwMaxLabel();
+  }
+
+  if (rankMaxMoviesInput) {
+    const updateRankMax = () => {
+      const val = parseInt(rankMaxMoviesInput.value, 10);
+      rankMaxMovies = !val ? Infinity : Math.max(0, val);
+      rankMaxMoviesInput.value = isNaN(val) || val < 0 ? 0 : val;
+    };
+    rankMaxMoviesInput.addEventListener('input', updateRankMax);
+    rankMaxMoviesInput.addEventListener('change', updateRankMax);
+    updateRankMax();
   }
 
   touchSetup();
@@ -724,26 +732,67 @@ function setDefaults() {
   updatePersonProgress();
 }
 
-async function fetchState(showStatus = false) {
+async function fetchState(showStatus = false, opts = {}) {
+  const allowCsvFallback = !!opts.allowCsvFallback && !csvFallbackAttempted;
+  const preservePair = !!opts.preservePair;
+  const skipPickPair = !!opts.skipPickPair;
   try {
     const resp = await fetch(`${API_BASE}/state`);
     if (!resp.ok) throw new Error(getT().statusNoState);
     const data = await resp.json();
     if (!data.ok || !data.state) throw new Error(data.error || getT().statusNoState);
-    applyState(data.state);
+    applyState(data.state, preservePair, skipPickPair);
+    if (allowCsvFallback && (movies || []).length < 2) {
+      csvFallbackAttempted = true;
+      const loaded = await loadMoviesFromCsv();
+      return loaded;
+    }
     if (showStatus) setStatus(getT().statusLoaded);
     return true;
   } catch (err) {
     console.error(err);
     if (showStatus) setStatus(getT().statusNoState);
     rankerConfirmed = false;
-    updateVoteVisibility();
+    updateVoteVisibility(preservePair, skipPickPair);
     voteSection?.classList.add('hidden');
     return false;
   }
 }
 
-function applyState(state) {
+async function loadMoviesFromCsv() {
+  const t = getT();
+  const btn = loadMoviesBtn;
+  const loadingMsg = t.statusCsvLoading || t.statusFetching || '';
+  if (loadingMsg) setStatus(loadingMsg);
+  resultsSection?.classList.add('hidden');
+  voteSection?.classList.add('hidden');
+  try {
+    if (btn) btn.disabled = true;
+    const resp = await fetch(`${API_BASE}/load-csv`, { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.state) applyState(data.state, false);
+    else await fetchState(false, { preservePair: false, allowCsvFallback: false });
+    const count = data.count ?? data.state?.movies?.length;
+    const okTpl = t.statusCsvOk || t.statusLoaded || '';
+    if (okTpl && count !== undefined) setStatus(okTpl.replace('{count}', count));
+    else if (okTpl) setStatus(okTpl);
+    rankerConfirmed = false;
+    updateVoteVisibility();
+    return true;
+  } catch (err) {
+    console.error(err);
+    const prefix = t.statusCsvError || t.statusFetchError || '';
+    setStatus(prefix + err.message);
+    rankerConfirmed = false;
+    updateVoteVisibility();
+    return false;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function applyState(state, preservePair = false, skipPickPair = false) {
   if (!state) return;
   const defaults = getRankerDefaults();
   movies = (state.movies || []).map(normalizeMovieImage);
@@ -805,7 +854,7 @@ function applyState(state) {
   updateMovieCountLabel();
   updateComparisonCountText();
   updatePersonProgress();
-  updateVoteVisibility();
+  updateVoteVisibility(preservePair, skipPickPair);
 }
 
 async function fetchAndLoadMovies(statusHandler) {
@@ -826,16 +875,17 @@ async function fetchAndLoadMovies(statusHandler) {
   resultsSection?.classList.add('hidden');
   voteSection?.classList.add('hidden');
   try {
+    const maxMoviesVal = isFinite(rankMaxMovies) ? rankMaxMovies : 0;
     const resp = await fetch(`${API_BASE}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filters, runtimeMin, runtimeMax, criticMin, criticMax, yearMin, yearMax, personCount, rFactor: R_FACTOR, lang: titleLanguage || 'en' })
+      body: JSON.stringify({ filters, runtimeMin, runtimeMax, criticMin, criticMax, yearMin, yearMax, personCount, rFactor: R_FACTOR, lang: titleLanguage || 'en', maxMovies: maxMoviesVal })
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
     const countLabel = data.count ?? t.unknownCount;
     setStatusFn(t.statusFetchOk.replace('{count}', countLabel));
-    await fetchState();
+    await fetchState(false, { preservePair: false, allowCsvFallback: false });
   } catch (err) {
     console.error(err);
     setStatusFn(t.statusFetchError + err.message);
@@ -994,6 +1044,16 @@ function thompsonSample(title) {
 
 function pickPair() {
   if (!movies || movies.length < 2) return;
+  if (currentPair && currentPair.length === 2) {
+    const [left, right] = currentPair;
+    const leftStill = left && movieByTitle[left.title];
+    const rightStill = right && movieByTitle[right.title];
+    if (leftStill && rightStill) {
+      currentPair = [movieByTitle[left.title], movieByTitle[right.title]];
+      renderPair();
+      return;
+    }
+  }
   const sampled = Object.keys(ratings).map(title => ({ title, score: thompsonSample(title) }));
   sampled.sort((a, b) => b.score - a.score);
   const topTwo = sampled.slice(0, 2);
@@ -1134,10 +1194,22 @@ function computeTargets() {
   personTargetVotes = Math.round((movies?.length || 0) * R_FACTOR);
 }
 
-function updateVoteVisibility() {
+function updateVoteVisibility(preservePair = false, skipPickPair = false) {
   const canShow = rankerConfirmed && (movies?.length || 0) >= 2;
   voteSection?.classList.toggle('hidden', !canShow);
-  if (canShow) pickPair();
+  if (!canShow) return;
+  if ((preservePair || skipPickPair) && currentPair && currentPair.length === 2) {
+    const [left, right] = currentPair;
+    const leftExists = left && movieByTitle[left.title];
+    const rightExists = right && movieByTitle[right.title];
+    if (leftExists && rightExists) {
+      currentPair = [movieByTitle[left.title], movieByTitle[right.title]];
+      renderPair();
+      if (skipPickPair) return;
+      // if preservePair only, fall through to maybe pick a new pair later
+    }
+  }
+  pickPair();
 }
 
 function updateProgress() {
@@ -1700,7 +1772,7 @@ function startSwipePolling() {
   if (swipePollTimer) clearInterval(swipePollTimer);
   swipePollTimer = setInterval(() => {
     loadSwipeStateFromServer(true);
-    fetchState(false);
+    fetchState(false, { preservePair: true, skipPickPair: true });
   }, SWIPE_POLL_MS);
 }
 
@@ -1726,8 +1798,11 @@ async function persistSwipeState(force = false) {
 
 async function confirmRankerSetup() {
   if ((movies || []).length < 2) {
-    setStatus(getT().swipeAddFirst || 'Bitte zuerst Filme laden.');
-    return;
+    const loaded = await loadMoviesFromCsv();
+    if ((movies || []).length < 2) {
+      if (loaded) setStatus(getT().swipeAddFirst || 'Bitte zuerst Filme laden.');
+      return;
+    }
   }
   try {
     const resp = await fetch(`${API_BASE}/rank-confirm`, {
@@ -1738,11 +1813,16 @@ async function confirmRankerSetup() {
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
     rankerConfirmed = true;
-    applyState(data.state || {});
+    applyState(data.state || {}, true);
     setStatus(getT().statusLoaded || '');
   } catch (err) {
     console.error(err);
     setStatus((getT().statusFetchError || 'Error: ') + err.message);
+    if ((movies || []).length >= 2) {
+      // Fallback: lokal freigeben, damit der Vergleich trotzdem starten kann.
+      rankerConfirmed = true;
+      updateVoteVisibility(true);
+    }
   }
 }
 

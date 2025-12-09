@@ -1198,6 +1198,18 @@ function updateVoteVisibility(preservePair = false, skipPickPair = false) {
   const canShow = rankerConfirmed && (movies?.length || 0) >= 2;
   voteSection?.classList.toggle('hidden', !canShow);
   if (!canShow) return;
+  if (skipPickPair) {
+    if (currentPair && currentPair.length === 2) {
+      const [left, right] = currentPair;
+      const leftExists = left && movieByTitle[left.title];
+      const rightExists = right && movieByTitle[right.title];
+      if (leftExists && rightExists) {
+        currentPair = [leftExists, rightExists];
+        renderPair();
+      }
+    }
+    return;
+  }
   if ((preservePair || skipPickPair) && currentPair && currentPair.length === 2) {
     const [left, right] = currentPair;
     const leftExists = left && movieByTitle[left.title];

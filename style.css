@@ -5,7 +5,7 @@
   --bg-elevated: #181e28;
   --border-subtle: #252c39;
   --border-strong: #303a4a;
-  --accent: #d32f2f; /* default red (Person 1) */
+  --accent: #d32f2f; /* default red (fallback) */
   --accent-strong: #ef5350;
   --accent-soft: rgba(211, 47, 47, 0.22);
   --text-main: #eceff6;
@@ -13,9 +13,9 @@
 }
 
 /* Accent themes (player based) */
-.accent-person1 { --accent: #d32f2f; --accent-strong: #ef5350; --accent-soft: rgba(211, 47, 47, 0.22); } /* Player 1 - red */
+.accent-person1 { --accent: #f5c400; --accent-strong: #ffd54f; --accent-soft: rgba(245, 196, 0, 0.2); } /* Player 1 - yellow */
 .accent-person2 { --accent: #4b8cf5; --accent-strong: #5aa0ff; --accent-soft: rgba(75, 140, 245, 0.18); } /* Player 2 - blue */
-.accent-person3 { --accent: #f5c400; --accent-strong: #ffd54f; --accent-soft: rgba(245, 196, 0, 0.2); } /* Player 3 - yellow */
+.accent-person3 { --accent: #d32f2f; --accent-strong: #ef5350; --accent-soft: rgba(211, 47, 47, 0.22); } /* Player 3 - red */
 .accent-person4 { --accent: #a05df5; --accent-strong: #b77bff; --accent-soft: rgba(160, 93, 245, 0.2); } /* Player 4 - violet */
 .accent-person5 { --accent: #2f8a4c; --accent-strong: #43a465; --accent-soft: rgba(47, 138, 76, 0.2); } /* Player 5 - dark green */
 

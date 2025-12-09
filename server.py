@@ -634,7 +634,8 @@ def generate():
                 translated = resolve_tmdb_title(tmdb_session, item, lang)
                 if translated:
                     display_title = sanitize_filename(translated)
-            movie_list.append({"title": display_title, "display": display_title, "image": file_title + ".jpg"})
+            year = item.get("ProductionYear")
+            movie_list.append({"title": display_title, "display": display_title, "image": file_title + ".jpg", "year": year})
 
         ratings = base_ratings_from_movies(movie_list)
         state = {

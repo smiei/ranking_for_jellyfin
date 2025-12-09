@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.tmp
 *.log
+*.spec
 
 # Runtime/output data
 images/
@@ -11,6 +12,8 @@ state.json
 swipe_state.json
 backloggd_backlog.csv
 backlogged/
+dist/
+build/
 
 # Local scratch files
 script_fix.tmp

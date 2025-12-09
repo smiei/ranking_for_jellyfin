@@ -2010,7 +2010,7 @@ async function loadSwipeFilteredList() {
     const existing = new Set(manual.map(m => m.title));
     let autoList = (movies || []).map(m => ({
       title: m.title,
-      display: m.display || m.title,
+      display: m.year ? `${m.display || m.title} (${m.year})` : (m.display || m.title),
       image: m.image || '',
       imageAbsolute: resolveMovieImage({ image: m.image || '' }),
       addedBy: adder,

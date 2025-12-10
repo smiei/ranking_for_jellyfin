@@ -398,7 +398,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(90,160,25
   transition: border-color 0.12s ease, transform 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
   box-shadow: 0 12px 28px rgba(0,0,0,0.28);
 }
-.movie-card:hover, .movie-card:focus-visible { border-color: var(--accent); background-color: rgba(75, 140, 245, 0.06); transform: translateY(-2px); box-shadow: 0 16px 32px rgba(0,0,0,0.32); }
+.movie-card.hover, .movie-card:hover, .movie-card:focus-visible { border-color: var(--accent); background-color: rgba(75, 140, 245, 0.06); transform: translateY(-2px); box-shadow: 0 16px 32px rgba(0,0,0,0.32); }
 .movie-media { width: 100%; height: 220px; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 12px; background: radial-gradient(circle at top, #1f2937, #0e111a); margin-bottom: 10px; }
 .movie-media img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .movie-title { margin: 0 0 10px; font-weight: 700; font-size: 1rem; text-align: center; color: var(--text-main); display: flex; align-items: center; justify-content: center; min-height: 3em; padding: 0 6px; word-wrap: break-word; }

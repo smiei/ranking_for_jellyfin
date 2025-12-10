@@ -48,6 +48,11 @@ let translations = {};
 let languageDefaults = {};
 let languageConfigLoaded = false;
 const DEBUG_SWIPE_FILTER = true;
+const GAMEPAD_DEADZONE = 0.25;
+let gamepadFocus = 'left';
+let gamepadPrevButtons = { left: false, right: false, a: false };
+let gamepadPollId = null;
+let gamepadPrevScroll = 0;
 const LOG_CATEGORIES = { dom: 'dom', api: 'api', frontend: 'frontend', errors: 'errors' };
 let appConfig = {
   api: { base: '', port: 5000 },
@@ -456,6 +461,55 @@ function ensureSwipeFilterMenuIntegrity(reason) {
   updateSwFilterMenuLabels(getT());
 }
 
+function setGamepadFocus(side) {
+  gamepadFocus = side === 'right' ? 'right' : 'left';
+  leftCard?.classList.toggle('hover', gamepadFocus === 'left');
+  rightCard?.classList.toggle('hover', gamepadFocus === 'right');
+}
+
+function stopGamepadLoop() {
+  if (gamepadPollId) cancelAnimationFrame(gamepadPollId);
+  gamepadPollId = null;
+  gamepadPrevButtons = { left: false, right: false, a: false };
+  leftCard?.classList.remove('hover');
+  rightCard?.classList.remove('hover');
+}
+
+function gamepadFrame() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = pads && pads[0];
+  if (!gp) {
+    gamepadPollId = requestAnimationFrame(gamepadFrame);
+    return;
+  }
+  const btnLeft = !!(gp.buttons?.[14]?.pressed);
+  const btnRight = !!(gp.buttons?.[15]?.pressed);
+  const btnA = !!(gp.buttons?.[0]?.pressed);
+  const btnB = !!(gp.buttons?.[1]?.pressed);
+  const btnStart = !!(gp.buttons?.[9]?.pressed);
+  const axisX = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+  const axisScroll = gp.axes && gp.axes.length > 3 ? gp.axes[3] : 0;
+
+  const edge = (name, pressed) => pressed && !gamepadPrevButtons[name];
+  if (edge('left', btnLeft) || axisX < -GAMEPAD_DEADZONE) setGamepadFocus('left');
+  if (edge('right', btnRight) || axisX > GAMEPAD_DEADZONE) setGamepadFocus('right');
+  if (edge('a', btnA)) vote(gamepadFocus === 'left' ? 0 : 1);
+  if (edge('start', btnStart)) settingsOverlay?.classList.remove('hidden');
+  if (edge('b', btnB)) settingsOverlay?.classList.add('hidden');
+
+  // Right stick vertical scroll
+  if (Math.abs(axisScroll) > GAMEPAD_DEADZONE) {
+    const delta = axisScroll * 15; // tune scroll speed
+    window.scrollBy(0, delta);
+    gamepadPrevScroll = axisScroll;
+  } else {
+    gamepadPrevScroll = 0;
+  }
+
+  gamepadPrevButtons = { left: btnLeft, right: btnRight, a: btnA, b: btnB, start: btnStart };
+  gamepadPollId = requestAnimationFrame(gamepadFrame);
+}
+
 function ensureSwipeFilterCheckboxes() {
   if (!swFilterMenu) return;
   swFilterUnplayed = document.getElementById('swFilterUnplayed');
@@ -702,6 +756,8 @@ async function init() {
     });
     observer.observe(swFilterMenu, { childList: true, subtree: true });
   }
+  window.addEventListener('gamepadconnected', () => { if (!gamepadPollId) gamepadFrame(); });
+  window.addEventListener('gamepaddisconnected', stopGamepadLoop);
   applyAppConfigDefaults();
   await initLanguages();
   bindEvents();
@@ -1157,6 +1213,7 @@ function renderPair() {
   leftImage.alt = leftLabel;
   rightImage.src = resolveMovieImage(right);
   rightImage.alt = rightLabel;
+  setGamepadFocus(gamepadFocus);
 }
 
 async function vote(winnerIndex) {

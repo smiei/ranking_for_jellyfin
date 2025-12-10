@@ -1,4 +1,5 @@
 // Komplett neu aufgebauter Frontend-Code: gemeinsame Elo-Liste, persistenter Zustand, funktionsfaehige Dropdowns
+// ----- App state and configuration -----
 let API_BASE = '';
 let BASE_RATING = 1500;
 let BASE_SIGMA = 400;
@@ -46,6 +47,8 @@ let titleLanguage = '';
 let translations = {};
 let languageDefaults = {};
 let languageConfigLoaded = false;
+const DEBUG_SWIPE_FILTER = true;
+const LOG_CATEGORIES = { dom: 'dom', api: 'api', frontend: 'frontend', errors: 'errors' };
 let appConfig = {
   api: { base: '', port: 5000 },
   ui: { defaultTab: 'ranker' },
@@ -96,6 +99,31 @@ function computeApiBase() {
   return `${protocol}//${host}:${port}`;
 }
 
+function logClient(category, message, data) {
+  try {
+    fetch(`${API_BASE || computeApiBase()}/client-log`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category, message, data })
+    }).catch(() => {});
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function debugLog(message, data) {
+  if (!DEBUG_SWIPE_FILTER) return;
+  logClient(LOG_CATEGORIES.dom, message, data);
+}
+
+function logError(context, err, extra) {
+  const base = { context };
+  if (err && err.message) base.error = err.message;
+  else if (typeof err === 'string') base.error = err;
+  const payload = extra ? { ...base, ...extra } : base;
+  logClient(LOG_CATEGORIES.errors, 'error', payload);
+}
+
 async function loadAppConfig() {
   try {
     const resp = await fetch('config/client.json');
@@ -105,6 +133,7 @@ async function loadAppConfig() {
     }
   } catch (err) {
     console.error('Failed to load app config', err);
+    logError('loadAppConfig', err);
   } finally {
     initialTab = appConfig?.ui?.defaultTab || initialTab;
     DEFAULT_R = parseInt(appConfig?.ranker?.defaultR ?? DEFAULT_R, 10) || DEFAULT_R;
@@ -411,6 +440,52 @@ function updateSwFilterMenuLabels(t) {
   });
 }
 
+function ensureSwipeFilterMenuIntegrity(reason) {
+  if (!swFilterMenu) return;
+  const hasUnplayed = !!document.getElementById('swFilterUnplayed');
+  const hasPlayed = !!document.getElementById('swFilterPlayed');
+  if (hasUnplayed && hasPlayed) return;
+  debugLog('swFilterMenu rebuild', { reason, hasUnplayed, hasPlayed });
+  swFilterMenu.innerHTML = `
+    <label><input type="checkbox" id="swFilterUnplayed" value="IsUnplayed" checked> Unplayed</label>
+    <label><input type="checkbox" id="swFilterPlayed" value="IsPlayed" checked> Played</label>
+  `;
+  swFilterUnplayed = document.getElementById('swFilterUnplayed');
+  swFilterPlayed = document.getElementById('swFilterPlayed');
+  attachSwipeFilterChangeHandlers();
+  updateSwFilterMenuLabels(getT());
+}
+
+function ensureSwipeFilterCheckboxes() {
+  if (!swFilterMenu) return;
+  swFilterUnplayed = document.getElementById('swFilterUnplayed');
+  swFilterPlayed = document.getElementById('swFilterPlayed');
+  debugLog('ensureSwipeFilterCheckboxes', {
+    hasMenu: !!swFilterMenu,
+    unplayedExists: !!swFilterUnplayed,
+    playedExists: !!swFilterPlayed,
+    innerHTML: swFilterMenu.innerHTML
+  });
+  ensureSwipeFilterMenuIntegrity('initial');
+  attachSwipeFilterChangeHandlers();
+  updateSwFilterMenuLabels(getT());
+}
+
+function attachSwipeFilterChangeHandlers() {
+  if (!swFilterMenu) return;
+  swFilterMenu.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.removeEventListener('change', updateSwFilterLabel);
+    cb.addEventListener('change', updateSwFilterLabel);
+  });
+}
+
+window.addEventListener('error', (e) => {
+  logError('window_error', e.error || e.message || 'unknown', { filename: e.filename, lineno: e.lineno, colno: e.colno });
+});
+window.addEventListener('unhandledrejection', (e) => {
+  logError('unhandled_rejection', e.reason || 'unknown');
+});
+
 
 function setupSettingsModal() {
   const openModal = () => settingsOverlay?.classList.remove('hidden');
@@ -468,6 +543,7 @@ function openConfirmModal(title, message, onConfirm) {
   confirmOverlay?.classList.remove('hidden');
 }
 
+// ----- DOM references -----
 const statusEl = document.getElementById('status');
 const voteSection = document.getElementById('voteSection');
 const resultsSection = document.getElementById('resultsSection');
@@ -501,8 +577,8 @@ const swipeFilteredBlock = document.getElementById('swipeFilteredBlock');
 const swFilterDropdown = document.getElementById('swFilterDropdown');
 const swFilterToggle = document.getElementById('swFilterToggle');
 const swFilterMenu = document.getElementById('swFilterMenu');
-const swFilterUnplayed = document.getElementById('swFilterUnplayed');
-const swFilterPlayed = document.getElementById('swFilterPlayed');
+let swFilterUnplayed = document.getElementById('swFilterUnplayed');
+let swFilterPlayed = document.getElementById('swFilterPlayed');
 const swFilter4kInline = document.getElementById('swFilter4kInline');
 const swRuntimeDropdown = document.getElementById('swRuntimeDropdown');
 const swRuntimeToggle = document.getElementById('swRuntimeToggle');
@@ -612,13 +688,26 @@ const toggleThemeBtn = document.getElementById('toggleThemeBtn');
 init();
 
 async function init() {
+  logClient(LOG_CATEGORIES.frontend, 'init_start');
   await loadAppConfig();
   API_BASE = computeApiBase();
+  ensureSwipeFilterCheckboxes();
+  if (swFilterMenu) {
+    debugLog('swFilterMenu init snapshot', { innerHTML: swFilterMenu.innerHTML });
+    const observer = new MutationObserver(() => {
+      const hasUnplayed = !!document.getElementById('swFilterUnplayed');
+      const hasPlayed = !!document.getElementById('swFilterPlayed');
+      debugLog('swFilterMenu mutated', { innerHTML: swFilterMenu.innerHTML, hasUnplayed, hasPlayed });
+      if (!hasUnplayed || !hasPlayed) ensureSwipeFilterMenuIntegrity('mutation');
+    });
+    observer.observe(swFilterMenu, { childList: true, subtree: true });
+  }
   applyAppConfigDefaults();
   await initLanguages();
   bindEvents();
   setDefaults();
-  fetchState(true, { allowCsvFallback: true });
+  fetchState(true, { allowCsvFallback: true }).catch(err => logError('fetchState', err));
+  logClient(LOG_CATEGORIES.frontend, 'init_done');
 }
 
 async function initLanguages() {
@@ -652,7 +741,7 @@ function bindEvents() {
   swYearToggle?.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(swYearMenu); });
 
   filterMenu?.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', updateFilterLabel));
-  swFilterMenu?.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', updateSwFilterLabel));
+  attachSwipeFilterChangeHandlers();
 
   [runtimeMenu, criticMenu, yearMenu, rMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(menu => menu?.addEventListener('click', (e) => e.stopPropagation()));
   document.addEventListener('click', handleOutsideClick);
@@ -906,6 +995,31 @@ function resetSwipeFilters() {
   if (swipeFilteredStatus) swipeFilteredStatus.textContent = '';
 }
 
+function updateToggleLabelFromMenu(menu, toggle) {
+  if (!toggle || !menu) return;
+  const selected = Array.from(menu.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.parentElement.textContent.trim());
+  const total = menu.querySelectorAll('input[type="checkbox"]').length;
+  const t = getT();
+  let label = t.filterNone;
+  if (selected.length === total && total > 0) label = t.filterToggle;
+  else if (selected.length === 1) label = selected[0];
+  toggle.textContent = label;
+}
+
+function updateRangeToggleLabel(toggle, minInput, maxInput) {
+  if (toggle && minInput && maxInput) toggle.textContent = `${minInput.value} - ${maxInput.value}`;
+}
+
+function updateYearToggleLabel(toggle, minInput, maxInput) {
+  if (!toggle || !minInput || !maxInput) return;
+  const t = getT();
+  const currentLabel = t.yearCurrent || 'current';
+  const maxVal = maxInput.value;
+  const currentYearStr = new Date().getFullYear().toString();
+  const isCurrent = maxVal === '2100' || maxVal === currentYearStr;
+  toggle.textContent = `${minInput.value} - ${isCurrent ? currentLabel : maxVal}`;
+}
+
 function toggleMenu(menu) {
   if (!menu) return;
   [filterMenu, runtimeMenu, criticMenu, yearMenu, rMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(m => { if (m && m !== menu) m.classList.add('hidden'); });
@@ -919,49 +1033,19 @@ function handleOutsideClick(e) {
 }
 
 function updateFilterLabel() {
-  if (!filterToggle || !filterMenu) return;
-  const selected = Array.from(filterMenu.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.parentElement.textContent.trim());
-  const t = getT();
-  let label = t.filterNone;
-  if (selected.length === 2) label = t.filterToggle;
-  else if (selected.length === 1) label = selected[0];
-  filterToggle.textContent = label;
+  updateToggleLabelFromMenu(filterMenu, filterToggle);
 }
 
 function updateSwFilterLabel() {
-  if (!swFilterToggle || !swFilterMenu) return;
-  const selected = Array.from(swFilterMenu.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.parentElement.textContent.trim());
-  const t = getT();
-  let label = t.filterNone;
-  if (selected.length === 2) label = t.filterToggle;
-  else if (selected.length === 1) label = selected[0];
-  swFilterToggle.textContent = label;
+  updateToggleLabelFromMenu(swFilterMenu, swFilterToggle);
 }
 
-function updateRuntimeLabel() { if (runtimeToggle && runtimeMinInput && runtimeMaxInput) runtimeToggle.textContent = `${runtimeMinInput.value} - ${runtimeMaxInput.value}`; }
-function updateCriticLabel() { if (criticToggle && criticMinInput && criticMaxInput) criticToggle.textContent = `${criticMinInput.value} - ${criticMaxInput.value}`; }
-function updateYearLabel() {
-  if (yearToggle && yearMinInput && yearMaxInput) {
-    const t = getT();
-    const currentLabel = t.yearCurrent || 'current';
-    const maxVal = yearMaxInput.value;
-    const currentYearStr = new Date().getFullYear().toString();
-    const isCurrent = maxVal === '2100' || maxVal === currentYearStr;
-    yearToggle.textContent = `${yearMinInput.value} - ${isCurrent ? currentLabel : maxVal}`;
-  }
-}
-function updateSwRuntimeLabel() { if (swRuntimeToggle && swRuntimeMin && swRuntimeMax) swRuntimeToggle.textContent = `${swRuntimeMin.value} - ${swRuntimeMax.value}`; }
-function updateSwCriticLabel() { if (swCriticToggle && swCriticMin && swCriticMax) swCriticToggle.textContent = `${swCriticMin.value} - ${swCriticMax.value}`; }
-function updateSwYearLabel() {
-  if (swYearToggle && swYearMin && swYearMax) {
-    const t = getT();
-    const currentLabel = t.yearCurrent || 'current';
-    const maxVal = swYearMax.value;
-    const currentYearStr = new Date().getFullYear().toString();
-    const isCurrent = maxVal === '2100' || maxVal === currentYearStr;
-    swYearToggle.textContent = `${swYearMin.value} - ${isCurrent ? currentLabel : maxVal}`;
-  }
-}
+function updateRuntimeLabel() { updateRangeToggleLabel(runtimeToggle, runtimeMinInput, runtimeMaxInput); }
+function updateCriticLabel() { updateRangeToggleLabel(criticToggle, criticMinInput, criticMaxInput); }
+function updateYearLabel() { updateYearToggleLabel(yearToggle, yearMinInput, yearMaxInput); }
+function updateSwRuntimeLabel() { updateRangeToggleLabel(swRuntimeToggle, swRuntimeMin, swRuntimeMax); }
+function updateSwCriticLabel() { updateRangeToggleLabel(swCriticToggle, swCriticMin, swCriticMax); }
+function updateSwYearLabel() { updateYearToggleLabel(swYearToggle, swYearMin, swYearMax); }
 
 function getSelectedFilters() {
   if (!filterMenu) return [];
@@ -1210,17 +1294,19 @@ function updateVoteVisibility(preservePair = false, skipPickPair = false) {
     }
     return;
   }
-  if ((preservePair || skipPickPair) && currentPair && currentPair.length === 2) {
+  if (preservePair && currentPair && currentPair.length === 2) {
     const [left, right] = currentPair;
     const leftExists = left && movieByTitle[left.title];
     const rightExists = right && movieByTitle[right.title];
     if (leftExists && rightExists) {
       currentPair = [movieByTitle[left.title], movieByTitle[right.title]];
       renderPair();
-      if (skipPickPair) return;
-      // if preservePair only, fall through to maybe pick a new pair later
+      // preserve current pair; do not pick a new one now
+      return;
     }
   }
+  // force new pair selection
+  currentPair = null;
   pickPair();
 }
 

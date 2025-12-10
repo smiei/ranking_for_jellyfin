@@ -19,6 +19,7 @@ ENV_PATH = ROOT / ".env"
 
 
 def load_env_file(path: Path) -> Dict[str, str]:
+    """Load simple KEY=VALUE pairs from a .env-style file."""
     env: Dict[str, str] = {}
     if not path.is_file():
         return env
@@ -32,6 +33,7 @@ def load_env_file(path: Path) -> Dict[str, str]:
 
 
 def load_json(path: Path, default: Any = None) -> Any:
+    """Load JSON safely, returning default on missing file or errors."""
     if not path.is_file():
         return default
     try:
@@ -39,6 +41,33 @@ def load_json(path: Path, default: Any = None) -> Any:
             return json.load(f)
     except Exception:
         return default
+
+
+def save_json(path: Path, data: Any) -> None:
+    """Persist JSON data with utf-8 encoding."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def append_debug_log(message: str, extra: Optional[Dict[str, Any]] = None) -> None:
+    """Append a debug line to the debug log file (backward compatibility)."""
+    log_event("debug", message, extra)
+
+
+def log_event(category: str, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
+    """Append structured log line to <category>.log."""
+    try:
+        filename = f"{category}.log"
+        log_path = (ROOT / LOG_DIR / filename).resolve()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"msg": message}
+        if extra:
+            payload.update(extra)
+        line = json.dumps(payload, ensure_ascii=False)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 env_file = load_env_file(ENV_PATH)
@@ -60,6 +89,8 @@ DEFAULT_R = int(server_cfg.get("defaultR", 2))
 SERVER_HOST = server_cfg.get("host", "0.0.0.0")
 SERVER_PORT = int(env.get("SERVER_PORT", server_cfg.get("port", 5000)))
 ALLOWED_ORIGINS = server_cfg.get("allowedOrigins") or "*"
+DEBUG_LOG = server_cfg.get("debugLog", "debug.log")
+LOG_DIR = Path(server_cfg.get("logDir") or "logs")
 # =======================
 
 app = Flask(__name__)
@@ -79,12 +110,14 @@ TMDB_TITLE_CACHE: Dict[Tuple[str, str], Optional[str]] = {}
 
 
 def sanitize_filename(name: str) -> str:
+    """Make a string safe for filenames while keeping spaces."""
     name = re.sub(r'[\\/*?:"<>|,]', '', name).strip()
     name = re.sub(r'\s+', ' ', name)
     return name[:150] if name else "unbenannt"
 
 
 def tmdb_title_by_id(session: requests.Session, tmdb_id: str, lang: str) -> Optional[str]:
+    """Lookup TMDB title by ID with language fallback."""
     try:
         resp = session.get(f"{TMDB_API_URL}/movie/{tmdb_id}", params={"language": lang}, timeout=8)
         if resp.status_code == 200:
@@ -96,6 +129,7 @@ def tmdb_title_by_id(session: requests.Session, tmdb_id: str, lang: str) -> Opti
 
 
 def tmdb_title_by_search(session: requests.Session, title: str, year: Optional[int], lang: str) -> Optional[str]:
+    """Search TMDB for a movie title, preferring matching year when available."""
     params = {"query": title, "language": lang, "include_adult": False}
     if year:
         params["year"] = year
@@ -116,6 +150,7 @@ def tmdb_title_by_search(session: requests.Session, title: str, year: Optional[i
 
 
 def resolve_tmdb_title(session: requests.Session, item: Dict[str, Any], lang: str) -> Optional[str]:
+    """Resolve translated title via TMDB, with in-memory caching."""
     if not session:
         return None
     raw_title = item.get("Name") or ""
@@ -135,6 +170,7 @@ def resolve_tmdb_title(session: requests.Session, item: Dict[str, Any], lang: st
 
 
 def clear_poster_dir() -> None:
+    """Remove all files/dirs inside poster directory and recreate it."""
     if os.path.isdir(POSTER_DIR):
         for path in glob.glob(os.path.join(POSTER_DIR, "*")):
             try:
@@ -152,6 +188,7 @@ def normalize_image_key(text: str) -> str:
 
 
 def build_image_lookup() -> Dict[str, str]:
+    """Build mapping from normalized image names to filenames."""
     lookup: Dict[str, str] = {}
     if not os.path.isdir(POSTER_DIR):
         return lookup
@@ -166,6 +203,7 @@ def build_image_lookup() -> Dict[str, str]:
 
 
 def match_image_for_title(title: str, lookup: Dict[str, str]) -> Optional[str]:
+    """Try multiple sanitized variants to find a matching poster image."""
     if not title:
         return None
     safe = sanitize_filename(title)
@@ -186,6 +224,7 @@ def match_image_for_title(title: str, lookup: Dict[str, str]) -> Optional[str]:
 
 
 def load_movies_from_csv() -> Dict[str, Any]:
+    """Load titles from CSV and reconstruct baseline ranking state."""
     path = Path(OUTPUT_CSV)
     if not path.is_file():
         raise FileNotFoundError(f"{OUTPUT_CSV} not found")
@@ -242,6 +281,7 @@ def load_movies_from_csv() -> Dict[str, Any]:
 
 
 def minutes_to_ticks(val: Optional[float]) -> Optional[int]:
+    """Convert minutes to Jellyfin ticks (100ns units)."""
     if val is None:
         return None
     try:
@@ -259,6 +299,7 @@ def k_factor(games):
 
 
 def update_elo(winner, loser):
+    """Elo update for one match with dynamic k-factor."""
     exp_w = expected_score(winner["rating"], loser["rating"])
     exp_l = 1 - exp_w
     k_w = k_factor(winner["games"])
@@ -272,6 +313,7 @@ def update_elo(winner, loser):
 
 def fetch_movies(filters: List[str], runtime_min=None, runtime_max=None, critic_min=None, critic_max=None,
                  year_min=None, year_max=None, limit=10000) -> List[Dict[str, Any]]:
+    """Fetch movies from Jellyfin, applying filters and runtime guardrails."""
     session = requests.Session()
     session.headers.update({"X-Emby-Token": API_KEY})
     min_ticks = minutes_to_ticks(runtime_min)
@@ -321,6 +363,7 @@ def fetch_movies(filters: List[str], runtime_min=None, runtime_max=None, critic_
 
 
 def download_poster(session, item):
+    """Download a poster for a Jellyfin item if missing locally."""
     movie_id = item["Id"]
     title = sanitize_filename(item.get("Name", "Unbenannt"))
     image_tags = item.get("ImageTags", {})
@@ -341,36 +384,23 @@ def download_poster(session, item):
 
 
 def load_state():
-    if not os.path.isfile(STATE_FILE):
-        return None
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    return load_json(Path(STATE_FILE))
 
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False)
+    save_json(Path(STATE_FILE), state)
 
 
 def load_swipe_state():
-    if not os.path.isfile(SWIPE_STATE_FILE):
-        return None
-    try:
-        with open(SWIPE_STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    return load_json(Path(SWIPE_STATE_FILE))
 
 
 def save_swipe_state(state):
-    with open(SWIPE_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False)
+    save_json(Path(SWIPE_STATE_FILE), state)
 
 
 def ensure_swipe_progress(state: Dict[str, Any]):
+    """Guarantee per-person swipe order/progress exists for all persons."""
     movies = state.get("movies") or []
     persons = state.get("persons") or []
     progress = state.get("progress") or {}
@@ -493,7 +523,6 @@ def swipe_confirm():
 def reset_all():
     """Reset ranker and swipe state and clear posters."""
     try:
-        clear_poster_dir()
         save_state({
             "movies": [],
             "ratings": {},
@@ -731,6 +760,27 @@ def list_movies():
 @app.get("/client-config")
 def client_config():
     return jsonify({"tmdbKeyConfigured": bool(TMDB_API_KEY)})
+
+
+@app.post("/debug-log")
+def debug_log_endpoint():
+    """Append frontend debug messages to debug log file."""
+    data = request.get_json(silent=True) or {}
+    msg = data.get("message", "")
+    extra = data.get("data") if isinstance(data.get("data"), dict) else None
+    append_debug_log(msg or "no-message", extra)
+    return jsonify({"ok": True})
+
+
+@app.post("/client-log")
+def client_log_endpoint():
+    """General client logging endpoint; writes to <category>.log."""
+    data = request.get_json(silent=True) or {}
+    category = data.get("category") or "frontend"
+    msg = data.get("message") or "no-message"
+    extra = data.get("data") if isinstance(data.get("data"), dict) else None
+    log_event(category, msg, extra)
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

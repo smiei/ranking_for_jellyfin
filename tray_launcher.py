@@ -53,7 +53,7 @@ def _find_project_root() -> Path:
 
 
 ROOT = _find_project_root()
-LOG_FILE = ROOT / "tray_servers.log"
+LOG_FILE = ROOT / "logs" / "tray_servers.log"
 
 def _python_cmd() -> List[str]:
     env_override = os.environ.get("TRAY_PYTHON")

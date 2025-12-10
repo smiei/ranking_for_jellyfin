@@ -459,12 +459,9 @@ input[type="number"] { background-color: #161b24; color: var(--text-main); borde
 .range-dropdown input[type="range"] { flex: 1; }
 .range-dropdown .row input[type="number"] { flex: 1; }
 .multi-select-menu input[type="range"] { width: 100%; }
-.r-dropdown .multi-select-menu { min-width: min(200px, 92vw); }
-
 @media (max-width: 640px) {
   .multi-select,
-  .range-dropdown,
-  .r-dropdown {
+  .range-dropdown {
     width: 100%;
   }
   .multi-select-toggle {

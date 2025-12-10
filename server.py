@@ -1,15 +1,16 @@
 import csv
 import glob
 import json
-import math
 import random
 import os
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Set
 
 import requests
+import trueskill
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
@@ -84,18 +85,31 @@ OUTPUT_CSV = server_cfg.get("outputCsv", "movies.csv")
 POSTER_DIR = server_cfg.get("posterDir", "images")
 STATE_FILE = server_cfg.get("stateFile", "state.json")
 SWIPE_STATE_FILE = server_cfg.get("swipeStateFile", "swipe_state.json")
-BASE_RATING = int(server_cfg.get("baseRating", 1500))
-DEFAULT_R = int(server_cfg.get("defaultR", 2))
 SERVER_HOST = server_cfg.get("host", "0.0.0.0")
 SERVER_PORT = int(env.get("SERVER_PORT", server_cfg.get("port", 5000)))
 ALLOWED_ORIGINS = server_cfg.get("allowedOrigins") or "*"
 DEBUG_LOG = server_cfg.get("debugLog", "debug.log")
 LOG_DIR = Path(server_cfg.get("logDir") or "logs")
+SAVES_DIR = Path(server_cfg.get("savesDir") or "saves")
+# TrueSkill configuration (scaled to approx. old Elo range)
+TS_MU = float(server_cfg.get("tsMu", 1500))
+TS_SIGMA = float(server_cfg.get("tsSigma", 400))
+TS_BETA = float(server_cfg.get("tsBeta", TS_SIGMA / 2))
+TS_TAU = float(server_cfg.get("tsTau", TS_SIGMA / 100))
+TS_DRAW_PROB = float(server_cfg.get("tsDrawProbability", 0.0))
+TS_ENV = trueskill.TrueSkill(
+    mu=TS_MU,
+    sigma=TS_SIGMA,
+    beta=TS_BETA,
+    tau=TS_TAU,
+    draw_probability=TS_DRAW_PROB,
+)
 # =======================
 
 app = Flask(__name__)
 CORS(app, origins=ALLOWED_ORIGINS)
 os.makedirs(POSTER_DIR, exist_ok=True)
+os.makedirs(SAVES_DIR, exist_ok=True)
 
 EMPTY_SWIPE_STATE = {
     "movies": [],
@@ -107,6 +121,174 @@ EMPTY_SWIPE_STATE = {
 }
 EMPTY_RANK_STATE_EXTRA = {"rankerConfirmed": False}
 TMDB_TITLE_CACHE: Dict[Tuple[str, str], Optional[str]] = {}
+PAIR_SEPARATOR = "||"
+
+
+def new_rating() -> Dict[str, Any]:
+    """Create a fresh TrueSkill rating entry."""
+    return {"ts_mu": TS_ENV.mu, "ts_sigma": TS_ENV.sigma, "games": 0, "wins": 0}
+
+
+def ensure_rating(entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize a rating dict to include TrueSkill fields."""
+    if not isinstance(entry, dict):
+        return new_rating()
+    mu = entry.get("ts_mu")
+    sigma = entry.get("ts_sigma")
+    # migrate old Elo rating into mu if needed
+    if mu is None and entry.get("rating") is not None:
+        mu = float(entry.get("rating"))
+    if sigma is None:
+        sigma = TS_ENV.sigma
+    games = int(entry.get("games", 0))
+    wins = int(entry.get("wins", 0))
+    return {"ts_mu": float(mu if mu is not None else TS_ENV.mu), "ts_sigma": float(sigma), "games": games, "wins": wins}
+
+
+def pair_key(a: str, b: str) -> str:
+    """Normalized key for an unordered pair of titles."""
+    return PAIR_SEPARATOR.join(sorted([a, b]))
+
+
+def ensure_pair_counts(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Guarantee per-person pair count maps exist."""
+    pair_counts = state.get("pairCounts")
+    if not isinstance(pair_counts, dict):
+        pair_counts = {}
+    # derive persons from comparisonCount or personCount
+    persons: Set[str] = set()
+    comp = state.get("comparisonCount") or {}
+    persons.update(comp.keys())
+    count = max(1, int(state.get("personCount") or len(persons) or 1))
+    if not persons:
+        persons = {f"person{i+1}" for i in range(count)}
+    for p in persons:
+        if p not in pair_counts or not isinstance(pair_counts[p], dict):
+            pair_counts[p] = {}
+    state["pairCounts"] = pair_counts
+    return state
+
+
+def record_pair_result(state: Dict[str, Any], person: str, title_a: str, title_b: str) -> None:
+    """Increment pair count for a person."""
+    ensure_pair_counts(state)
+    key = pair_key(title_a, title_b)
+    pair_map = state["pairCounts"].setdefault(person, {})
+    pair_map[key] = pair_map.get(key, 0) + 1
+
+
+def compute_pair_coverage(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute coverage stats overall and per person."""
+    ensure_pair_counts(state)
+    movies = state.get("movies") or []
+    title_set = {m.get("title") for m in movies if m.get("title")}
+    total_pairs = max(0, len(movies) * (len(movies) - 1) // 2)
+    pair_counts = state.get("pairCounts") or {}
+    overall_keys: Set[str] = set()
+    per_person: Dict[str, Dict[str, Any]] = {}
+    for person, pairs in pair_counts.items():
+        valid_keys = set()
+        for key in (pairs or {}):
+            parts = key.split(PAIR_SEPARATOR)
+            if len(parts) == 2 and (not title_set or (parts[0] in title_set and parts[1] in title_set)):
+                valid_keys.add(key)
+        covered = len(valid_keys)
+        ratio = (covered / total_pairs) if total_pairs else 0.0
+        per_person[person] = {"coveredPairs": covered, "totalPairs": total_pairs, "ratio": ratio}
+        overall_keys.update(valid_keys)
+    covered_pairs = len(overall_keys)
+    ratio = (covered_pairs / total_pairs) if total_pairs else 0.0
+    state["pairCoverage"] = {"coveredPairs": covered_pairs, "totalPairs": total_pairs, "ratio": ratio}
+    state["pairCoveragePerPerson"] = per_person
+    return state
+
+
+def normalize_ranking_state(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Ensure ratings, pair counts, and coverage are present."""
+    if not state:
+        return state
+    raw_ratings = state.get("ratings") or {}
+    movies = state.get("movies") or []
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for item in movies:
+        title = item.get("title")
+        if not title:
+            continue
+        normalized[title] = ensure_rating(raw_ratings.get(title))
+    # keep stray ratings for titles not in list
+    for title, entry in raw_ratings.items():
+        if title not in normalized:
+            normalized[title] = ensure_rating(entry)
+    state["ratings"] = normalized
+    ensure_pair_counts(state)
+    compute_pair_coverage(state)
+    state.setdefault("tsConfig", {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma})
+    return state
+
+
+def sanitize_save_name(name: str) -> str:
+    name = re.sub(r"[^a-zA-Z0-9_-]", "_", name or "")
+    name = re.sub(r"_+", "_", name).strip("_")
+    return name or datetime.now().strftime("save_%Y%m%d_%H%M%S")
+
+
+def list_saves() -> List[Dict[str, Any]]:
+    saves: List[Dict[str, Any]] = []
+    SAVES_DIR.mkdir(parents=True, exist_ok=True)
+    for entry in SAVES_DIR.iterdir():
+        if not entry.is_dir():
+            continue
+        stat = entry.stat()
+        saves.append({
+            "name": entry.name,
+            "createdAt": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        })
+    saves.sort(key=lambda x: x["createdAt"], reverse=True)
+    return saves
+
+
+def create_save_snapshot(name: Optional[str] = None) -> str:
+    snapshot_name = sanitize_save_name(name or "")
+    dest = SAVES_DIR / snapshot_name
+    if dest.exists():
+        raise ValueError("save already exists")
+    state_path = Path(STATE_FILE)
+    if not state_path.is_file():
+        raise FileNotFoundError("no ranking state to save")
+    dest.mkdir(parents=True, exist_ok=False)
+    shutil.copy2(state_path, dest / state_path.name)
+    swipe_path = Path(SWIPE_STATE_FILE)
+    if swipe_path.is_file():
+        shutil.copy2(swipe_path, dest / swipe_path.name)
+    csv_path = Path(OUTPUT_CSV)
+    if csv_path.is_file():
+        shutil.copy2(csv_path, dest / csv_path.name)
+    images_path = Path(POSTER_DIR)
+    if images_path.is_dir():
+        shutil.copytree(images_path, dest / images_path.name, dirs_exist_ok=True)
+    return snapshot_name
+
+
+def load_save_snapshot(name: str) -> Dict[str, Any]:
+    snapshot_name = sanitize_save_name(name)
+    src = SAVES_DIR / snapshot_name
+    if not src.is_dir():
+        raise FileNotFoundError("save not found")
+    state_src = src / Path(STATE_FILE).name
+    if not state_src.is_file():
+        raise FileNotFoundError("save missing state")
+    shutil.copy2(state_src, Path(STATE_FILE))
+    swipe_src = src / Path(SWIPE_STATE_FILE).name
+    if swipe_src.is_file():
+        shutil.copy2(swipe_src, Path(SWIPE_STATE_FILE))
+    csv_src = src / Path(OUTPUT_CSV).name
+    if csv_src.is_file():
+        shutil.copy2(csv_src, Path(OUTPUT_CSV))
+    images_src = src / Path(POSTER_DIR).name
+    if images_src.is_dir():
+        clear_poster_dir()
+        shutil.copytree(images_src, POSTER_DIR, dirs_exist_ok=True)
+    return normalize_ranking_state(load_state()) or {}
 
 
 def sanitize_filename(name: str) -> str:
@@ -258,14 +440,12 @@ def load_movies_from_csv() -> Dict[str, Any]:
     ratings = base_ratings_from_movies(movies)
     existing_state = load_state() or {}
     person_count = max(1, int(existing_state.get("personCount") or 1))
-    r_factor = max(DEFAULT_R, int(existing_state.get("rFactor") or DEFAULT_R))
     state = {
         "movies": movies,
         "ratings": ratings,
         "comparisonCount": {},
         "totalVotes": 0,
         "personCount": person_count,
-        "rFactor": r_factor,
         "filters": existing_state.get("filters") or [],
         "runtimeMin": existing_state.get("runtimeMin"),
         "runtimeMax": existing_state.get("runtimeMax"),
@@ -274,8 +454,11 @@ def load_movies_from_csv() -> Dict[str, Any]:
         "yearMin": existing_state.get("yearMin"),
         "yearMax": existing_state.get("yearMax"),
         "rankerConfirmed": False,
+        "pairCounts": {},
+        "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
     }
     state.update(EMPTY_RANK_STATE_EXTRA)
+    compute_pair_coverage(state)
     save_state(state)
     return state
 
@@ -290,25 +473,16 @@ def minutes_to_ticks(val: Optional[float]) -> Optional[int]:
         return None
 
 
-def expected_score(rA, rB):
-    return 1 / (1 + math.pow(10, (rB - rA) / 400))
-
-
-def k_factor(games):
-    return 32 * max(0.35, 1 / math.sqrt(games + 1))
-
-
-def update_elo(winner, loser):
-    """Elo update for one match with dynamic k-factor."""
-    exp_w = expected_score(winner["rating"], loser["rating"])
-    exp_l = 1 - exp_w
-    k_w = k_factor(winner["games"])
-    k_l = k_factor(loser["games"])
-    winner["rating"] += k_w * (1 - exp_w)
-    loser["rating"] += k_l * (0 - exp_l)
+def update_trueskill(winner: Dict[str, Any], loser: Dict[str, Any]) -> None:
+    """TrueSkill update for one match."""
+    w_rating = trueskill.Rating(mu=winner["ts_mu"], sigma=winner["ts_sigma"])
+    l_rating = trueskill.Rating(mu=loser["ts_mu"], sigma=loser["ts_sigma"])
+    new_w, new_l = TS_ENV.rate_1vs1(w_rating, l_rating)
+    winner["ts_mu"], winner["ts_sigma"] = new_w.mu, new_w.sigma
+    loser["ts_mu"], loser["ts_sigma"] = new_l.mu, new_l.sigma
     winner["games"] += 1
     loser["games"] += 1
-    winner["wins"] += 1
+    winner["wins"] = winner.get("wins", 0) + 1
 
 
 def fetch_movies(filters: List[str], runtime_min=None, runtime_max=None, critic_min=None, critic_max=None,
@@ -429,7 +603,7 @@ def base_ratings_from_movies(movies):
     ratings = {}
     for item in movies:
         title = item["title"]
-        ratings[title] = {"rating": BASE_RATING, "games": 0, "wins": 0}
+        ratings[title] = new_rating()
     return ratings
 
 
@@ -440,7 +614,7 @@ def info():
 
 @app.get("/state")
 def get_state():
-    state = load_state()
+    state = normalize_ranking_state(load_state())
     if not state:
         return jsonify({"ok": False, "error": "no state"}), 404
     return jsonify({"ok": True, "state": state})
@@ -487,7 +661,7 @@ def swipe_reset():
 
 @app.post("/rank-confirm")
 def rank_confirm():
-    state = load_state()
+    state = normalize_ranking_state(load_state())
     if not state:
         return jsonify({"ok": False, "error": "no state"}), 404
     data = request.get_json(silent=True) or {}
@@ -519,6 +693,38 @@ def swipe_confirm():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.get("/saves")
+def list_saves_endpoint():
+    try:
+        return jsonify({"ok": True, "saves": list_saves()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/save-state")
+def save_state_snapshot():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    try:
+        saved_name = create_save_snapshot(name)
+        return jsonify({"ok": True, "name": saved_name, "saves": list_saves()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/load-state")
+def load_state_snapshot():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    try:
+        state = load_save_snapshot(name)
+        return jsonify({"ok": True, "state": state, "name": sanitize_save_name(name)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.post("/reset-all")
 def reset_all():
     """Reset ranker and swipe state and clear posters."""
@@ -529,7 +735,6 @@ def reset_all():
             "comparisonCount": {},
             "totalVotes": 0,
             "personCount": 1,
-            "rFactor": DEFAULT_R,
             "filters": [],
             "runtimeMin": 20,
             "runtimeMax": 300,
@@ -538,6 +743,10 @@ def reset_all():
             "yearMin": 1950,
             "yearMax": None,
             "rankerConfirmed": False,
+            "pairCounts": {},
+            "pairCoverage": {"coveredPairs": 0, "totalPairs": 0, "ratio": 0},
+            "pairCoveragePerPerson": {},
+            "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
         })
         save_swipe_state(EMPTY_SWIPE_STATE.copy())
         return jsonify({"ok": True})
@@ -590,21 +799,22 @@ def vote():
     winner_title = data.get("winner")
     loser_title = data.get("loser")
     current_person = data.get("person") or "person1"
-    r_factor = data.get("rFactor")
-    state = load_state()
+    state = normalize_ranking_state(load_state())
     if not state:
         return jsonify({"ok": False, "error": "no state"}), 404
     ratings = state.get("ratings", {})
     if winner_title not in ratings or loser_title not in ratings:
         return jsonify({"ok": False, "error": "unknown title"}), 400
-    update_elo(ratings[winner_title], ratings[loser_title])
+    ratings[winner_title] = ensure_rating(ratings[winner_title])
+    ratings[loser_title] = ensure_rating(ratings[loser_title])
+    update_trueskill(ratings[winner_title], ratings[loser_title])
     comp = state.get("comparisonCount", {})
     comp[current_person] = comp.get(current_person, 0) + 1
     state["ratings"] = ratings
     state["comparisonCount"] = comp
     state["totalVotes"] = state.get("totalVotes", 0) + 1
-    if r_factor is not None:
-        state["rFactor"] = max(DEFAULT_R, int(r_factor))
+    record_pair_result(state, current_person, winner_title, loser_title)
+    compute_pair_coverage(state)
     save_state(state)
     return jsonify({"ok": True, "state": state})
 
@@ -621,7 +831,6 @@ def generate():
     year_max = data.get("yearMax")
     max_movies = int(data.get("maxMovies") or 0)
     person_count = data.get("personCount") or 1
-    r_factor = data.get("rFactor") or DEFAULT_R
     lang = (data.get("lang") or "en").lower()
     tmdb_key = data.get("tmdbKey") or TMDB_API_KEY
     translate_titles = bool(tmdb_key) and lang != "en"
@@ -673,7 +882,6 @@ def generate():
             "comparisonCount": {},
             "totalVotes": 0,
             "personCount": person_count,
-            "rFactor": r_factor,
             "filters": filters,
             "runtimeMin": runtime_min,
             "runtimeMax": runtime_max,
@@ -682,7 +890,10 @@ def generate():
             "yearMin": year_min,
             "yearMax": year_max,
             "rankerConfirmed": False,
+            "pairCounts": {},
+            "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
         }
+        compute_pair_coverage(state)
         save_state(state)
         return jsonify({"ok": True, "count": len(movie_list)})
     except Exception as e:
@@ -692,7 +903,7 @@ def generate():
 @app.post("/load-csv")
 def load_csv_endpoint():
     try:
-        state = load_movies_from_csv()
+        state = normalize_ranking_state(load_movies_from_csv())
         return jsonify({"ok": True, "count": len(state.get("movies") or []), "state": state})
     except FileNotFoundError:
         return jsonify({"ok": False, "error": f"{OUTPUT_CSV} not found"}), 404
@@ -703,12 +914,11 @@ def load_csv_endpoint():
 @app.post("/reset")
 def reset_state():
     data = request.get_json(silent=True) or {}
-    state = load_state()
+    state = normalize_ranking_state(load_state())
     if not state:
         return jsonify({"ok": False, "error": "no state"}), 404
     movies = state.get("movies", [])
     person_count = max(1, int(data.get("personCount") or state.get("personCount") or 1))
-    r_factor = max(DEFAULT_R, int(data.get("rFactor") or state.get("rFactor") or DEFAULT_R))
     ratings = base_ratings_from_movies(movies)
     comparison = {f"person{i+1}": 0 for i in range(person_count)}
     state.update({
@@ -716,9 +926,11 @@ def reset_state():
         "comparisonCount": comparison,
         "totalVotes": 0,
         "personCount": person_count,
-        "rFactor": r_factor,
         "rankerConfirmed": False,
+        "pairCounts": {},
+        "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
     })
+    compute_pair_coverage(state)
     save_state(state)
     return jsonify({"ok": True, "state": state})
 

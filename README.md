@@ -1,9 +1,9 @@
 # Jellyfin Movies – Ranking & Swipe App
 
-Small web app to pull your Jellyfin movie library, rank titles head-to-head (Elo), and do group swipe voting to find matches. Backend is Flask; frontend is plain HTML/CSS/JS. Includes a Windows tray launcher for easy start/stop.
+Small web app to pull your Jellyfin movie library, rank titles head-to-head (TrueSkill), and do group swipe voting to find matches. Backend is Flask; frontend is plain HTML/CSS/JS. Includes a Windows tray launcher for easy start/stop.
 
 ## What it does
-- **Ranking:** fetch movies from Jellyfin (or load a CSV), compare pairs, and build an Elo-based ordering. Filters: played/unplayed, runtime, critic score, year, 4K, max movies. Multiple voters, CSV export, top-10 image.
+- **Ranking:** fetch movies from Jellyfin (or load a CSV), compare pairs, and build a TrueSkill-based ordering. Filters: played/unplayed, runtime, critic score, year, 4K, max movies. Multiple voters, CSV export, top-10 image.
 - **Swipe:** group-friendly swipe UI; people swipe Yes/No on the same list and matches are detected when everyone likes the same title. Works from a manual list or the same filtered Jellyfin fetch.
 - **Translations:** `i18n.json` with UI/title language toggles; TMDB key is optional for title translation.
 - **Persistence:** state in `state.json` / `swipe_state.json`; posters saved in `images/`.
@@ -60,7 +60,7 @@ Small web app to pull your Jellyfin movie library, rank titles head-to-head (Elo
 
 ## Frontend basics
 - Open `http://localhost:8000/index.html`.
-- Tabs: **Ranking** (pairwise Elo) and **Swipe** (group likes).
+- Tabs: **Ranking** (pairwise TrueSkill) and **Swipe** (group likes).
 - Filters: Played/Unplayed, runtime, critic rating, year, 4K, max movies.
 - Sources:
   - “Filme laden” uses Jellyfin with current filters.
@@ -70,7 +70,7 @@ Small web app to pull your Jellyfin movie library, rank titles head-to-head (Elo
 - `GET /` health/info
 - `POST /generate` fetch from Jellyfin, write CSV/posters, reset rank state
 - `POST /load-csv` load `movies.csv`
-- `POST /vote` submit Elo vote
+- `POST /vote` submit TrueSkill vote
 - `POST /reset` reset rank state (keep movies)
 - `GET /state` current rank state
 - `POST /rank-confirm` mark rank confirmed

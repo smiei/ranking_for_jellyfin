@@ -15,6 +15,7 @@ backlogged/
 dist/
 build/
 logs/
+saves/
 
 # Local scratch files
 script_fix.tmp

@@ -1,11 +1,9 @@
-// Komplett neu aufgebauter Frontend-Code: gemeinsame Elo-Liste, persistenter Zustand, funktionsfaehige Dropdowns
+// Frontend code: shared TrueSkill list, persistent state, functional dropdowns
 // ----- App state and configuration -----
 let API_BASE = '';
-let BASE_RATING = 1500;
-let BASE_SIGMA = 400;
-let DEFAULT_R = 2;
+let TS_MU = 1500;
+let TS_SIGMA = 400;
 
-let R_FACTOR = DEFAULT_R;
 let movies = [];
 let movieByTitle = {};
 let ratings = {};
@@ -15,8 +13,8 @@ let personCount = 1;
 let currentPerson = 'person1';
 let currentPair = null;
 let totalVotes = 0;
-let targetVotes = 0;
-let personTargetVotes = 0;
+let pairCoverage = { coveredPairs: 0, totalPairs: 0, ratio: 0 };
+let pairCoveragePerPerson = {};
 let rankerConfirmed = false;
 let csvFallbackAttempted = false;
 // Swiper state
@@ -143,10 +141,7 @@ async function loadAppConfig() {
     logError('loadAppConfig', err);
   } finally {
     initialTab = appConfig?.ui?.defaultTab || initialTab;
-    DEFAULT_R = parseInt(appConfig?.ranker?.defaultR ?? DEFAULT_R, 10) || DEFAULT_R;
-    R_FACTOR = DEFAULT_R;
     SWIPE_POLL_MS = parseInt(appConfig?.swipe?.pollMs ?? SWIPE_POLL_MS, 10) || SWIPE_POLL_MS;
-    BASE_RATING = parseInt(appConfig?.ranker?.baseRating ?? BASE_RATING, 10) || BASE_RATING;
     API_BASE = computeApiBase();
   }
 }
@@ -164,8 +159,7 @@ function getRankerDefaults() {
     criticMin: parseFloat(critic.min ?? 0),
     criticMax: parseFloat(critic.max ?? 10),
     yearMin: parseInt(year.min ?? 1950, 10),
-    yearMax: resolveYearValue(year.max ?? new Date().getFullYear()),
-    rDefault: parseInt(cfg.defaultR ?? DEFAULT_R, 10) || DEFAULT_R
+    yearMax: resolveYearValue(year.max ?? new Date().getFullYear())
   };
 }
 
@@ -218,8 +212,6 @@ function applyRankerDefaultsFromConfig() {
     yearMinInput.value = yearMinNumInput.value = defaults.yearMin;
     yearMaxInput.value = yearMaxNumInput.value = defaults.yearMax;
   }
-  if (rSlider) rSlider.value = defaults.rDefault;
-  if (rInput) rInput.value = defaults.rDefault;
   updateFilterLabel();
   updateRuntimeLabel();
   updateCriticLabel();
@@ -403,7 +395,6 @@ function applyUILanguage() {
   swipeYesBtn?.setAttribute('aria-label', t.yes);
   swipeNoBtn?.setAttribute('aria-label', t.no);
   swipeCard?.setAttribute('aria-label', t.swipeHeading);
-  updateRLabel();
   updateFilterLabel();
   updateSwFilterLabel();
   updateRuntimeLabel();
@@ -415,6 +406,86 @@ function applyUILanguage() {
   updateMovieCountLabel();
   updateSwipeCard();
   updateSelectedMoviesSummary();
+}
+
+function setSaveStatus(msg) {
+  if (saveStatus) saveStatus.textContent = msg || '';
+}
+
+function renderSaveList(saves = []) {
+  if (!saveList) return;
+  saveList.innerHTML = '';
+  if (!saves.length) {
+    const opt = document.createElement('option');
+    opt.textContent = 'No saves yet';
+    opt.value = '';
+    saveList.appendChild(opt);
+    return;
+  }
+  saves.forEach((s) => {
+    const opt = document.createElement('option');
+    opt.value = s.name;
+    const label = s.createdAt ? `${s.name} (${new Date(s.createdAt).toLocaleString()})` : s.name;
+    opt.textContent = label;
+    saveList.appendChild(opt);
+  });
+}
+
+async function fetchSaveList() {
+  if (!saveList) return;
+  try {
+    const resp = await fetch(`${API_BASE}/saves`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    renderSaveList(data.saves || []);
+    setSaveStatus('');
+  } catch (err) {
+    console.error(err);
+    setSaveStatus(`Could not load saves: ${err.message}`);
+  }
+}
+
+async function saveSnapshot() {
+  const name = (saveNameInput?.value || '').trim();
+  setSaveStatus('Saving snapshot...');
+  try {
+    const resp = await fetch(`${API_BASE}/save-state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name || null })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    renderSaveList(data.saves || []);
+    setSaveStatus(`Saved as "${data.name}"`);
+  } catch (err) {
+    console.error(err);
+    setSaveStatus(`Save failed: ${err.message}`);
+  }
+}
+
+async function loadSnapshot() {
+  const selected = saveList?.value || '';
+  if (!selected) {
+    setSaveStatus('Select a save first');
+    return;
+  }
+  setSaveStatus(`Loading "${selected}"...`);
+  try {
+    const resp = await fetch(`${API_BASE}/load-state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: selected })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.state) applyState(data.state, false, true);
+    setSaveStatus(`Loaded "${selected}"`);
+    await fetchSaveList();
+  } catch (err) {
+    console.error(err);
+    setSaveStatus(`Load failed: ${err.message}`);
+  }
 }
 
 function updateFilterMenuLabels(t) {
@@ -820,11 +891,6 @@ const yearToggle = document.getElementById('yearToggle');
 const yearMenu = document.getElementById('yearMenu');
 const progressBar = document.getElementById('progressBar');
 const progressLabel = document.getElementById('progressLabel');
-const rDropdown = document.getElementById('rDropdown');
-const rToggle = document.getElementById('rToggle');
-const rMenu = document.getElementById('rMenu');
-const rSlider = document.getElementById('rSlider');
-const rInput = document.getElementById('rInput');
 const personProgress = document.getElementById('personProgress');
 const confirmSetupBtn = document.getElementById('confirmSetupBtn');
 const confirmSwipeBtn = document.getElementById('confirmSwipeBtn');
@@ -841,6 +907,12 @@ const swipeProgressLabel = document.getElementById('swipeProgressLabel');
 const swipeProgressBar = document.getElementById('swipeProgressBar');
 const ACCENT_CLASSES = ['accent-person1', 'accent-person2', 'accent-person3', 'accent-person4', 'accent-person5'];
 const toggleThemeBtn = document.getElementById('toggleThemeBtn');
+const saveNameInput = document.getElementById('saveNameInput');
+const saveStateBtn = document.getElementById('saveStateBtn');
+const refreshSavesBtn = document.getElementById('refreshSavesBtn');
+const loadSaveBtn = document.getElementById('loadSaveBtn');
+const saveList = document.getElementById('saveList');
+const saveStatus = document.getElementById('saveStatus');
 
 init();
 
@@ -864,6 +936,7 @@ async function init() {
   applyAppConfigDefaults();
   await initLanguages();
   bindEvents();
+  fetchSaveList();
   setDefaults();
   fetchState(true, { allowCsvFallback: true }).catch(err => logError('fetchState', err));
   logClient(LOG_CATEGORIES.frontend, 'init_done');
@@ -882,6 +955,9 @@ function bindEvents() {
   resetFiltersBtn?.addEventListener('click', resetFilters);
   showResultsBtn?.addEventListener('click', showResults);
   downloadTop10Btn?.addEventListener('click', downloadTop10Image);
+  saveStateBtn?.addEventListener('click', saveSnapshot);
+  refreshSavesBtn?.addEventListener('click', fetchSaveList);
+  loadSaveBtn?.addEventListener('click', loadSnapshot);
   applyPersonsBtn?.addEventListener('click', onApplyPersons);
 
   // person buttons handled in renderPersonButtons
@@ -893,7 +969,6 @@ function bindEvents() {
   runtimeToggle?.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(runtimeMenu); });
   criticToggle?.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(criticMenu); });
   yearToggle?.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(yearMenu); });
-  rToggle?.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(rMenu); });
   swFilterToggle?.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(swFilterMenu); });
   swRuntimeToggle?.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(swRuntimeMenu); });
   swCriticToggle?.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(swCriticMenu); });
@@ -902,7 +977,7 @@ function bindEvents() {
   filterMenu?.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', updateFilterLabel));
   attachSwipeFilterChangeHandlers();
 
-  [runtimeMenu, criticMenu, yearMenu, rMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(menu => menu?.addEventListener('click', (e) => e.stopPropagation()));
+  [runtimeMenu, criticMenu, yearMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(menu => menu?.addEventListener('click', (e) => e.stopPropagation()));
   document.addEventListener('click', handleOutsideClick);
   document.addEventListener('focusin', handleFocusChange);
 
@@ -922,11 +997,6 @@ function bindEvents() {
   if (swYearMax) swYearMax.max = swipeYearMaxBound;
   if (swYearMaxNum) swYearMaxNum.max = swipeYearMaxBound;
   linkRangeInputs(swYearMin, swYearMax, swYearMinNum, swYearMaxNum, swipeDefaults.yearMin, swipeYearMaxBound, updateSwYearLabel);
-
-  if (rSlider && rInput) {
-    rSlider.addEventListener('input', () => syncR(parseInt(rSlider.value, 10)));
-    rInput.addEventListener('input', () => syncR(parseInt(rInput.value, 10)));
-  }
 
   if (swMaxMoviesInput) {
     const updateSwMaxLabel = () => {
@@ -975,8 +1045,8 @@ function setDefaults() {
   updateRuntimeLabel();
   updateCriticLabel();
   updateYearLabel();
-  syncR(DEFAULT_R);
-  computeTargets();
+  pairCoverage = { coveredPairs: 0, totalPairs: 0, ratio: 0 };
+  pairCoveragePerPerson = persons.reduce((acc, p) => ({ ...acc, [p]: { coveredPairs: 0, totalPairs: 0, ratio: 0 } }), {});
   updateProgress();
   updatePersonProgress();
 }
@@ -1045,18 +1115,35 @@ function applyState(state, preservePair = false, skipPickPair = false) {
   if (!state) return;
   const defaults = getRankerDefaults();
   movies = (state.movies || []).map(normalizeMovieImage);
+  const tsCfg = state.tsConfig || {};
+  TS_MU = !isNaN(parseFloat(tsCfg.mu)) ? parseFloat(tsCfg.mu) : TS_MU;
+  TS_SIGMA = !isNaN(parseFloat(tsCfg.sigma)) ? parseFloat(tsCfg.sigma) : TS_SIGMA;
   movieByTitle = Object.fromEntries((movies || []).map(m => [m.title, m]));
-  ratings = state.ratings || {};
-  movies.forEach(m => {
-    if (!ratings[m.title]) ratings[m.title] = { rating: BASE_RATING, games: 0, wins: 0 };
+  const incomingRatings = state.ratings || {};
+  const normalizedRatings = {};
+  movies.forEach((m) => { normalizedRatings[m.title] = ensureTsRating(incomingRatings[m.title]); });
+  Object.keys(incomingRatings).forEach((title) => {
+    if (!normalizedRatings[title]) normalizedRatings[title] = ensureTsRating(incomingRatings[title]);
   });
+  ratings = normalizedRatings;
   comparisonCount = state.comparisonCount || {};
   personCount = Math.max(1, parseInt(state.personCount || 1, 10));
   persons = Array.from({ length: personCount }, (_, i) => `person${i + 1}`);
   persons.forEach(p => { if (comparisonCount[p] === undefined) comparisonCount[p] = 0; });
   currentPerson = persons.includes(currentPerson) ? currentPerson : persons[0];
   totalVotes = state.totalVotes || 0;
-  syncR(Math.max(DEFAULT_R, parseInt(state.rFactor ?? DEFAULT_R, 10) || DEFAULT_R));
+  const rawCoverage = state.pairCoverage || { coveredPairs: 0, totalPairs: 0, ratio: 0 };
+  const inferredTotalPairs = rawCoverage.totalPairs ?? (movies.length > 1 ? (movies.length * (movies.length - 1)) / 2 : 0);
+  const totalPairsOverall = rawCoverage.totalPairs ?? inferredTotalPairs;
+  const coveredOverall = rawCoverage.coveredPairs ?? 0;
+  pairCoverage = { coveredPairs: coveredOverall, totalPairs: totalPairsOverall, ratio: totalPairsOverall ? coveredOverall / totalPairsOverall : 0 };
+  pairCoveragePerPerson = state.pairCoveragePerPerson || {};
+  persons.forEach((p) => {
+    const entry = pairCoveragePerPerson[p] || { coveredPairs: 0, totalPairs: inferredTotalPairs, ratio: 0 };
+    const totalPairs = entry.totalPairs ?? inferredTotalPairs;
+    const covered = entry.coveredPairs ?? 0;
+    pairCoveragePerPerson[p] = { coveredPairs: covered, totalPairs, ratio: totalPairs ? covered / totalPairs : 0 };
+  });
   rankerConfirmed = !!state.rankerConfirmed;
 
   if (numPersonsSelect) numPersonsSelect.value = personCount.toString();
@@ -1098,7 +1185,6 @@ function applyState(state, preservePair = false, skipPickPair = false) {
     updateYearLabel();
   }
 
-  computeTargets();
   updateProgress();
   updateMovieCountLabel();
   updateComparisonCountText();
@@ -1128,7 +1214,7 @@ async function fetchAndLoadMovies(statusHandler) {
     const resp = await fetch(`${API_BASE}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filters, runtimeMin, runtimeMax, criticMin, criticMax, yearMin, yearMax, personCount, rFactor: R_FACTOR, lang: titleLanguage || 'en', maxMovies: maxMoviesVal })
+      body: JSON.stringify({ filters, runtimeMin, runtimeMax, criticMin, criticMax, yearMin, yearMax, personCount, lang: titleLanguage || 'en', maxMovies: maxMoviesVal })
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
@@ -1146,7 +1232,6 @@ async function fetchAndLoadMovies(statusHandler) {
 function resetFilters() {
   const defaults = getRankerDefaults();
   applyRankerDefaultsFromConfig();
-  syncR(defaults.rDefault);
   setStatus(getT().statusFiltersReset);
 }
 
@@ -1182,14 +1267,14 @@ function updateYearToggleLabel(toggle, minInput, maxInput) {
 
 function toggleMenu(menu) {
   if (!menu) return;
-  [filterMenu, runtimeMenu, criticMenu, yearMenu, rMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(m => { if (m && m !== menu) m.classList.add('hidden'); });
+  [filterMenu, runtimeMenu, criticMenu, yearMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(m => { if (m && m !== menu) m.classList.add('hidden'); });
   menu.classList.toggle('hidden');
 }
 
 function handleOutsideClick(e) {
-  const keep = [filterDropdown, runtimeDropdown, criticDropdown, yearDropdown, rDropdown, swFilterDropdown, swRuntimeDropdown, swCriticDropdown, swYearDropdown].filter(Boolean);
+  const keep = [filterDropdown, runtimeDropdown, criticDropdown, yearDropdown, swFilterDropdown, swRuntimeDropdown, swCriticDropdown, swYearDropdown].filter(Boolean);
   const inside = keep.some(el => el.contains(e.target));
-  if (!inside) [filterMenu, runtimeMenu, criticMenu, yearMenu, rMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(m => m?.classList.add('hidden'));
+  if (!inside) [filterMenu, runtimeMenu, criticMenu, yearMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(m => m?.classList.add('hidden'));
 }
 
 function updateFilterLabel() {
@@ -1256,34 +1341,24 @@ function linkRangeInputs(rangeMin, rangeMax, numMin, numMax, minVal, maxVal, onC
   syncFromRange();
 }
 
-function syncR(val) {
-  let v = parseInt(val, 10);
-  if (isNaN(v)) v = DEFAULT_R;
-  v = clamp(v, DEFAULT_R, 10);
-  R_FACTOR = v;
-  if (rSlider) rSlider.value = v;
-  if (rInput) rInput.value = v;
-  updateRLabel();
-  computeTargets();
-  updateProgress();
-  updatePersonProgress();
+function ensureTsRating(entry) {
+  const base = entry || {};
+  const mu = parseFloat(base.ts_mu ?? base.rating ?? TS_MU);
+  const sigma = parseFloat(base.ts_sigma ?? TS_SIGMA);
+  return {
+    ts_mu: isNaN(mu) ? TS_MU : mu,
+    ts_sigma: isNaN(sigma) ? TS_SIGMA : Math.max(sigma, 0.0001),
+    games: parseInt(base.games ?? 0, 10) || 0,
+    wins: parseInt(base.wins ?? 0, 10) || 0
+  };
 }
-
-function updateRLabel() {
-  if (!rToggle) return;
-  const t = getT();
-  const label = `${t.rLabel}: ${R_FACTOR}`;
-  rToggle.textContent = label;
-}
-
-function expectedScore(rA, rB) { return 1 / (1 + Math.pow(10, (rB - rA) / 400)); }
-function kFactor(games) { return 32 * Math.max(0.35, 1 / Math.sqrt(games + 1)); }
 
 function thompsonSample(title) {
   const entry = ratings[title];
   if (!entry) return -Infinity;
-  const sigma = BASE_SIGMA / Math.sqrt(entry.games + 1);
-  return entry.rating + randomNormal() * sigma;
+  const mu = entry.ts_mu ?? TS_MU;
+  const sigma = entry.ts_sigma ?? TS_SIGMA;
+  return mu + randomNormal() * sigma;
 }
 
 function pickPair() {
@@ -1329,7 +1404,7 @@ async function vote(winnerIndex) {
     const resp = await fetch(`${API_BASE}/vote`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ winner: winner.title, loser: loser.title, person: currentPerson, rFactor: R_FACTOR })
+      body: JSON.stringify({ winner: winner.title, loser: loser.title, person: currentPerson })
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
@@ -1348,7 +1423,7 @@ function updateComparisonCountText() {
 function computeRanking() {
   const arr = Object.keys(ratings).map(title => {
     const r = ratings[title];
-    return { title, rating: r.rating, games: r.games, wins: r.wins };
+    return { title, rating: r.ts_mu ?? r.rating ?? 0, sigma: r.ts_sigma ?? TS_SIGMA, games: r.games, wins: r.wins };
   });
   arr.sort((a, b) => b.rating - a.rating);
   arr.forEach((item, idx) => { item.rank = idx + 1; });
@@ -1434,11 +1509,6 @@ function showResults() {
   resultsSection?.classList.remove('hidden');
 }
 
-function computeTargets() {
-  targetVotes = Math.round((movies?.length || 0) * personCount * R_FACTOR);
-  personTargetVotes = Math.round((movies?.length || 0) * R_FACTOR);
-}
-
 function updateVoteVisibility(preservePair = false, skipPickPair = false) {
   const canShow = rankerConfirmed && (movies?.length || 0) >= 2;
   voteSection?.classList.toggle('hidden', !canShow);
@@ -1473,9 +1543,12 @@ function updateVoteVisibility(preservePair = false, skipPickPair = false) {
 
 function updateProgress() {
   if (!progressBar || !progressLabel) return;
-  const pct = targetVotes > 0 ? Math.min(100, (totalVotes / targetVotes) * 100) : 0;
+  const covered = pairCoverage?.coveredPairs ?? 0;
+  const total = pairCoverage?.totalPairs ?? 0;
+  const pct = total > 0 ? Math.min(100, (covered / total) * 100) : 0;
   progressBar.style.width = pct + '%';
-  progressLabel.textContent = `${totalVotes} / ${targetVotes}`;
+  const pctLabel = Math.round(pct);
+  progressLabel.textContent = total > 0 ? `${pctLabel}% coverage (${covered} / ${total} pairs)` : 'Pair coverage: 0%';
 }
 
 function updatePersonProgress() {
@@ -1486,13 +1559,14 @@ function updatePersonProgress() {
     wrapper.className = 'person-progress-item';
     const label = document.createElement('div');
     label.className = 'progress-label';
-    const count = comparisonCount[p] || 0;
-    label.textContent = `${formatPersonLabel(p)}: ${count} / ${personTargetVotes}`;
+    const coverage = pairCoveragePerPerson?.[p] || { coveredPairs: 0, totalPairs: pairCoverage.totalPairs ?? 0, ratio: 0 };
+    const totalPairs = coverage.totalPairs ?? pairCoverage.totalPairs ?? 0;
+    label.textContent = `${formatPersonLabel(p)}: ${coverage.coveredPairs} / ${totalPairs} pairs`;
     const track = document.createElement('div');
     track.className = 'progress-track';
     const bar = document.createElement('div');
     bar.className = 'progress-bar';
-    const pct = personTargetVotes > 0 ? Math.min(100, (count / personTargetVotes) * 100) : 0;
+    const pct = totalPairs > 0 ? Math.min(100, (coverage.coveredPairs / totalPairs) * 100) : 0;
     bar.style.width = pct + '%';
     track.appendChild(bar);
     wrapper.appendChild(label);
@@ -1886,22 +1960,25 @@ async function resetAllStates() {
       if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
       // Ranking auf Default
       rankerConfirmed = false;
-      applyState(data.rank || data.state || {
-        movies: [],
-        ratings: {},
-        comparisonCount: {},
-        totalVotes: 0,
-        personCount: 1,
-        rFactor: DEFAULT_R,
-        filters: [],
-        runtimeMin: 20,
-        runtimeMax: 300,
-        criticMin: 0,
-        criticMax: 10,
-        yearMin: 1950,
-        yearMax: new Date().getFullYear(),
-        rankerConfirmed: false
-      });
+        applyState(data.rank || data.state || {
+          movies: [],
+          ratings: {},
+          comparisonCount: {},
+          totalVotes: 0,
+          personCount: 1,
+          filters: [],
+          runtimeMin: 20,
+          runtimeMax: 300,
+          criticMin: 0,
+          criticMax: 10,
+          yearMin: 1950,
+          yearMax: new Date().getFullYear(),
+          rankerConfirmed: false,
+          pairCounts: {},
+          pairCoverage: { coveredPairs: 0, totalPairs: 0, ratio: 0 },
+          pairCoveragePerPerson: {},
+          tsConfig: { mu: TS_MU, sigma: TS_SIGMA }
+        });
       // Swipe auf Default
       swipeSelectedMovies = [];
       swipeLikes = {};
@@ -2458,7 +2535,8 @@ async function onApplyPersons() {
     renderPersonButtons();
     updateCurrentPersonLabel();
     setAccentForPerson(currentPerson);
-    computeTargets();
+    pairCoverage = { coveredPairs: 0, totalPairs: 0, ratio: 0 };
+    pairCoveragePerPerson = persons.reduce((acc, p) => ({ ...acc, [p]: { coveredPairs: 0, totalPairs: 0, ratio: 0 } }), {});
     updateProgress();
     updatePersonProgress();
     setStatus(getT().statusPersonsChanged);
@@ -2469,7 +2547,7 @@ async function onApplyPersons() {
     const resp = await fetch(`${API_BASE}/reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ personCount: requested, rFactor: R_FACTOR })
+      body: JSON.stringify({ personCount: requested })
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);

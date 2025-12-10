@@ -10,3 +10,4 @@ requests
 pystray
 Pillow
 pyinstaller
+trueskill

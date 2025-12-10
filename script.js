@@ -49,10 +49,12 @@ let languageDefaults = {};
 let languageConfigLoaded = false;
 const DEBUG_SWIPE_FILTER = true;
 const GAMEPAD_DEADZONE = 0.25;
+const GAMEPAD_BUTTONS = { A: 0, B: 1, START: 9, DPAD_UP: 12, DPAD_DOWN: 13, DPAD_LEFT: 14, DPAD_RIGHT: 15 };
 let gamepadFocus = 'left';
-let gamepadPrevButtons = { left: false, right: false, a: false };
+let gamepadPrevButtons = [];
 let gamepadPollId = null;
 let gamepadPrevScroll = 0;
+let focusIndex = 0;
 const LOG_CATEGORIES = { dom: 'dom', api: 'api', frontend: 'frontend', errors: 'errors' };
 let appConfig = {
   api: { base: '', port: 5000 },
@@ -461,16 +463,84 @@ function ensureSwipeFilterMenuIntegrity(reason) {
   updateSwFilterMenuLabels(getT());
 }
 
+// Detects an open modal overlay, if any.
+function getActiveOverlay() {
+  return document.querySelector('.modal-overlay:not(.hidden)');
+}
+
+// Returns visible, focusable elements in DOM order for controller navigation.
+function getFocusableElements(container) {
+  const overlay = getActiveOverlay();
+  const root = container || overlay || document;
+  const selectors = ['button', '[tabindex]:not([tabindex="-1"])', 'a', 'input', 'select', 'textarea'];
+  const nodes = Array.from(root.querySelectorAll(selectors.join(',')));
+  return nodes.filter((el) => {
+    if (!el) return false;
+    if (typeof el.disabled === 'boolean' && el.disabled) return false;
+    if (el.tabIndex !== undefined && el.tabIndex < 0) return false;
+    const isVisible = el.offsetParent !== null || (typeof el.getClientRects === 'function' && el.getClientRects().length > 0);
+    return isVisible;
+  });
+}
+
+// Keeps focusIndex aligned with the currently focused DOM element.
+function syncFocusIndex(focusables = getFocusableElements()) {
+  if (!focusables.length) return -1;
+  const activeIdx = focusables.indexOf(document.activeElement);
+  if (activeIdx !== -1) {
+    focusIndex = activeIdx;
+    return focusIndex;
+  }
+  if (focusIndex >= focusables.length) focusIndex = 0;
+  return focusIndex;
+}
+
+function moveFocus(delta) {
+  const focusables = getFocusableElements();
+  if (!focusables.length || !delta) return;
+  syncFocusIndex(focusables);
+  focusIndex = (focusIndex + delta + focusables.length) % focusables.length;
+  const target = focusables[focusIndex];
+  if (target && typeof target.focus === 'function') target.focus();
+}
+
+function clickFocused() {
+  const focusables = getFocusableElements();
+  if (!focusables.length) return false;
+  syncFocusIndex(focusables);
+  const target = focusables[focusIndex];
+  if (!target) return false;
+  if (typeof target.focus === 'function') target.focus();
+  if (typeof target.click === 'function') target.click();
+  return true;
+}
+
 function setGamepadFocus(side) {
   gamepadFocus = side === 'right' ? 'right' : 'left';
   leftCard?.classList.toggle('hover', gamepadFocus === 'left');
   rightCard?.classList.toggle('hover', gamepadFocus === 'right');
 }
 
+// Edge-detection helper: returns true only on the transition to pressed.
+function wasButtonPressed(buttonIndex, gp) {
+  const pressedNow = !!(gp?.buttons?.[buttonIndex]?.pressed);
+  const pressedBefore = !!gamepadPrevButtons[buttonIndex];
+  gamepadPrevButtons[buttonIndex] = pressedNow;
+  return pressedNow && !pressedBefore;
+}
+
+function focusFirstInOverlay(overlay) {
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  const focusables = getFocusableElements(overlay);
+  if (!focusables.length) return;
+  focusIndex = 0;
+  if (typeof focusables[0].focus === 'function') focusables[0].focus();
+}
+
 function stopGamepadLoop() {
   if (gamepadPollId) cancelAnimationFrame(gamepadPollId);
   gamepadPollId = null;
-  gamepadPrevButtons = { left: false, right: false, a: false };
+  gamepadPrevButtons = [];
   leftCard?.classList.remove('hover');
   rightCard?.classList.remove('hover');
 }
@@ -479,23 +549,37 @@ function gamepadFrame() {
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   const gp = pads && pads[0];
   if (!gp) {
+    gamepadPrevButtons = [];
     gamepadPollId = requestAnimationFrame(gamepadFrame);
     return;
   }
-  const btnLeft = !!(gp.buttons?.[14]?.pressed);
-  const btnRight = !!(gp.buttons?.[15]?.pressed);
-  const btnA = !!(gp.buttons?.[0]?.pressed);
-  const btnB = !!(gp.buttons?.[1]?.pressed);
-  const btnStart = !!(gp.buttons?.[9]?.pressed);
   const axisX = gp.axes && gp.axes.length ? gp.axes[0] : 0;
   const axisScroll = gp.axes && gp.axes.length > 3 ? gp.axes[3] : 0;
 
-  const edge = (name, pressed) => pressed && !gamepadPrevButtons[name];
-  if (edge('left', btnLeft) || axisX < -GAMEPAD_DEADZONE) setGamepadFocus('left');
-  if (edge('right', btnRight) || axisX > GAMEPAD_DEADZONE) setGamepadFocus('right');
-  if (edge('a', btnA)) vote(gamepadFocus === 'left' ? 0 : 1);
-  if (edge('start', btnStart)) settingsOverlay?.classList.remove('hidden');
-  if (edge('b', btnB)) settingsOverlay?.classList.add('hidden');
+  const dpadRight = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_RIGHT, gp);
+  const dpadDown = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_DOWN, gp);
+  const dpadLeft = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_LEFT, gp);
+  const dpadUp = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_UP, gp);
+  const moveNext = dpadRight || dpadDown;
+  const movePrev = dpadLeft || dpadUp;
+  if (moveNext) moveFocus(1);
+  if (movePrev) moveFocus(-1);
+
+  if (wasButtonPressed(GAMEPAD_BUTTONS.A, gp)) clickFocused();
+
+  const settingsOpen = settingsOverlay && !settingsOverlay.classList.contains('hidden');
+  if (wasButtonPressed(GAMEPAD_BUTTONS.START, gp)) {
+    settingsOverlay?.classList.remove('hidden');
+    focusFirstInOverlay(settingsOverlay);
+  }
+  if (settingsOpen && wasButtonPressed(GAMEPAD_BUTTONS.B, gp)) {
+    settingsOverlay?.classList.add('hidden');
+    if (settingsBtn && typeof settingsBtn.focus === 'function') settingsBtn.focus();
+  }
+
+  // Left stick horizontal still toggles the two voting cards.
+  if (axisX < -GAMEPAD_DEADZONE) setGamepadFocus('left');
+  if (axisX > GAMEPAD_DEADZONE) setGamepadFocus('right');
 
   // Right stick vertical scroll
   if (Math.abs(axisScroll) > GAMEPAD_DEADZONE) {
@@ -506,8 +590,20 @@ function gamepadFrame() {
     gamepadPrevScroll = 0;
   }
 
-  gamepadPrevButtons = { left: btnLeft, right: btnRight, a: btnA, b: btnB, start: btnStart };
   gamepadPollId = requestAnimationFrame(gamepadFrame);
+}
+
+// Keep controller navigation in sync when focus changes via mouse/keyboard.
+function handleFocusChange(e) {
+  const focusables = getFocusableElements();
+  const idx = focusables.indexOf(e.target);
+  if (idx !== -1) focusIndex = idx;
+  if (e.target === leftCard) setGamepadFocus('left');
+  else if (e.target === rightCard) setGamepadFocus('right');
+  else {
+    leftCard?.classList.remove('hover');
+    rightCard?.classList.remove('hover');
+  }
 }
 
 function ensureSwipeFilterCheckboxes() {
@@ -542,8 +638,14 @@ window.addEventListener('unhandledrejection', (e) => {
 
 
 function setupSettingsModal() {
-  const openModal = () => settingsOverlay?.classList.remove('hidden');
-  const closeModal = () => settingsOverlay?.classList.add('hidden');
+  const openModal = () => {
+    settingsOverlay?.classList.remove('hidden');
+    focusFirstInOverlay(settingsOverlay);
+  };
+  const closeModal = () => {
+    settingsOverlay?.classList.add('hidden');
+    if (settingsBtn && typeof settingsBtn.focus === 'function') settingsBtn.focus();
+  };
   settingsBtn?.addEventListener('click', openModal);
   settingsClose?.addEventListener('click', closeModal);
   settingsCancel?.addEventListener('click', closeModal);
@@ -595,6 +697,7 @@ function openConfirmModal(title, message, onConfirm) {
   if (confirmCancel) confirmCancel.textContent = t.settingsCancel || 'Cancel';
   pendingConfirmAction = onConfirm;
   confirmOverlay?.classList.remove('hidden');
+  focusFirstInOverlay(confirmOverlay);
 }
 
 // ----- DOM references -----
@@ -801,6 +904,7 @@ function bindEvents() {
 
   [runtimeMenu, criticMenu, yearMenu, rMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(menu => menu?.addEventListener('click', (e) => e.stopPropagation()));
   document.addEventListener('click', handleOutsideClick);
+  document.addEventListener('focusin', handleFocusChange);
 
   const rankDefaults = getRankerDefaults();
   const swipeDefaults = getSwipeDefaults();
@@ -1684,6 +1788,7 @@ function showMatchModal(title) {
   matchOverlay?.classList.remove('hidden');
   matchModalOpen = true;
   seenMatches.add(title);
+  focusFirstInOverlay(matchOverlay);
 }
 
 function closeMatchModal() {
@@ -2455,9 +2560,4 @@ function downloadRankingCsv() {
   a.click();
   URL.revokeObjectURL(url);
 }
-
-
-
-
-
 

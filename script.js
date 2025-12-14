@@ -53,6 +53,8 @@ let gamepadPrevButtons = [];
 let gamepadPollId = null;
 let gamepadPrevScroll = 0;
 let focusIndex = 0;
+let lastInputMethod = null; // 'mouse' | 'controller' | null
+let controllerFocusEl = null;
 const LOG_CATEGORIES = { dom: 'dom', api: 'api', frontend: 'frontend', errors: 'errors' };
 let appConfig = {
   api: { base: '', port: 5000 },
@@ -333,6 +335,7 @@ function applyUILanguage() {
   setText('label[for="filter4kMain"]', t.filter4k);
   setText(fetchMoviesBtn, t.fetchBtn);
   setText(loadMoviesBtn, t.csvBtn);
+  setText(addShowsBtn, t.addShowsBtn || 'Add Shows');
   setText(resetFiltersBtn, t.resetFilters);
   setText('#voteSection .hint', t.voteHint);
   setText(showResultsBtn, t.showResults);
@@ -539,6 +542,43 @@ function getActiveOverlay() {
   return document.querySelector('.modal-overlay:not(.hidden)');
 }
 
+function clearControllerHighlight() {
+  if (controllerFocusEl) controllerFocusEl.classList.remove('controller-focus');
+  controllerFocusEl = null;
+  leftCard?.classList.remove('hover');
+  rightCard?.classList.remove('hover');
+}
+
+function applyControllerHighlight(el) {
+  if (lastInputMethod !== 'controller') return;
+  if (controllerFocusEl && controllerFocusEl !== el) controllerFocusEl.classList.remove('controller-focus');
+  controllerFocusEl = null;
+  if (!el || !el.classList) return;
+  controllerFocusEl = el;
+  el.classList.add('controller-focus');
+}
+
+function setLastInputMethod(method) {
+  if (!method || lastInputMethod === method) return;
+  lastInputMethod = method;
+  if (method !== 'controller') {
+    clearControllerHighlight();
+  } else {
+    const activeEl = document.activeElement;
+    applyControllerHighlight(activeEl);
+    if (activeEl === leftCard) setGamepadFocus('left');
+    else if (activeEl === rightCard) setGamepadFocus('right');
+  }
+}
+
+function setupInputModeTracking() {
+  const markMouseInput = () => setLastInputMethod('mouse');
+  document.addEventListener('mousemove', markMouseInput, { passive: true });
+  document.addEventListener('mousedown', markMouseInput);
+  document.addEventListener('wheel', markMouseInput, { passive: true });
+  document.addEventListener('touchstart', markMouseInput, { passive: true });
+}
+
 // Returns visible, focusable elements in DOM order for controller navigation.
 function getFocusableElements(container) {
   const overlay = getActiveOverlay();
@@ -588,8 +628,9 @@ function clickFocused() {
 
 function setGamepadFocus(side) {
   gamepadFocus = side === 'right' ? 'right' : 'left';
-  leftCard?.classList.toggle('hover', gamepadFocus === 'left');
-  rightCard?.classList.toggle('hover', gamepadFocus === 'right');
+  const shouldHighlight = lastInputMethod === 'controller';
+  leftCard?.classList.toggle('hover', shouldHighlight && gamepadFocus === 'left');
+  rightCard?.classList.toggle('hover', shouldHighlight && gamepadFocus === 'right');
 }
 
 // Edge-detection helper: returns true only on the transition to pressed.
@@ -612,8 +653,7 @@ function stopGamepadLoop() {
   if (gamepadPollId) cancelAnimationFrame(gamepadPollId);
   gamepadPollId = null;
   gamepadPrevButtons = [];
-  leftCard?.classList.remove('hover');
-  rightCard?.classList.remove('hover');
+  clearControllerHighlight();
 }
 
 function gamepadFrame() {
@@ -626,6 +666,7 @@ function gamepadFrame() {
   }
   const axisX = gp.axes && gp.axes.length ? gp.axes[0] : 0;
   const axisScroll = gp.axes && gp.axes.length > 3 ? gp.axes[3] : 0;
+  let controllerUsed = false;
 
   const dpadRight = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_RIGHT, gp);
   const dpadDown = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_DOWN, gp);
@@ -633,33 +674,41 @@ function gamepadFrame() {
   const dpadUp = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_UP, gp);
   const moveNext = dpadRight || dpadDown;
   const movePrev = dpadLeft || dpadUp;
-  if (moveNext) moveFocus(1);
-  if (movePrev) moveFocus(-1);
+  if (moveNext) { setLastInputMethod('controller'); moveFocus(1); controllerUsed = true; }
+  if (movePrev) { setLastInputMethod('controller'); moveFocus(-1); controllerUsed = true; }
 
-  if (wasButtonPressed(GAMEPAD_BUTTONS.A, gp)) clickFocused();
+  if (wasButtonPressed(GAMEPAD_BUTTONS.A, gp)) { setLastInputMethod('controller'); clickFocused(); controllerUsed = true; }
 
   const settingsOpen = settingsOverlay && !settingsOverlay.classList.contains('hidden');
   if (wasButtonPressed(GAMEPAD_BUTTONS.START, gp)) {
+    setLastInputMethod('controller');
     settingsOverlay?.classList.remove('hidden');
     focusFirstInOverlay(settingsOverlay);
+    controllerUsed = true;
   }
   if (settingsOpen && wasButtonPressed(GAMEPAD_BUTTONS.B, gp)) {
+    setLastInputMethod('controller');
     settingsOverlay?.classList.add('hidden');
     if (settingsBtn && typeof settingsBtn.focus === 'function') settingsBtn.focus();
+    controllerUsed = true;
   }
 
   // Left stick horizontal still toggles the two voting cards.
-  if (axisX < -GAMEPAD_DEADZONE) setGamepadFocus('left');
-  if (axisX > GAMEPAD_DEADZONE) setGamepadFocus('right');
+  if (axisX < -GAMEPAD_DEADZONE) { setLastInputMethod('controller'); setGamepadFocus('left'); controllerUsed = true; }
+  if (axisX > GAMEPAD_DEADZONE) { setLastInputMethod('controller'); setGamepadFocus('right'); controllerUsed = true; }
 
   // Right stick vertical scroll
   if (Math.abs(axisScroll) > GAMEPAD_DEADZONE) {
     const delta = axisScroll * 15; // tune scroll speed
     window.scrollBy(0, delta);
     gamepadPrevScroll = axisScroll;
+    setLastInputMethod('controller');
+    controllerUsed = true;
   } else {
     gamepadPrevScroll = 0;
   }
+
+  if (controllerUsed) applyControllerHighlight(document.activeElement);
 
   gamepadPollId = requestAnimationFrame(gamepadFrame);
 }
@@ -669,6 +718,8 @@ function handleFocusChange(e) {
   const focusables = getFocusableElements();
   const idx = focusables.indexOf(e.target);
   if (idx !== -1) focusIndex = idx;
+  if (lastInputMethod === 'controller') applyControllerHighlight(e.target);
+  else clearControllerHighlight();
   if (e.target === leftCard) setGamepadFocus('left');
   else if (e.target === rightCard) setGamepadFocus('right');
   else {
@@ -913,6 +964,7 @@ const refreshSavesBtn = document.getElementById('refreshSavesBtn');
 const loadSaveBtn = document.getElementById('loadSaveBtn');
 const saveList = document.getElementById('saveList');
 const saveStatus = document.getElementById('saveStatus');
+const addShowsBtn = document.getElementById('addShowsBtn');
 
 init();
 
@@ -950,7 +1002,9 @@ async function initLanguages() {
 }
 
 function bindEvents() {
+  setupInputModeTracking();
   loadMoviesBtn?.addEventListener('click', loadMoviesFromCsv);
+  addShowsBtn?.addEventListener('click', addShowsFromJellyfin);
   fetchMoviesBtn?.addEventListener('click', () => fetchAndLoadMovies());
   resetFiltersBtn?.addEventListener('click', resetFilters);
   showResultsBtn?.addEventListener('click', showResults);
@@ -1229,6 +1283,42 @@ async function fetchAndLoadMovies(statusHandler) {
   }
 }
 
+async function addShowsFromJellyfin() {
+  const t = getT();
+  const btn = addShowsBtn;
+  const loadingMsg = t.statusFetching || '';
+  if (loadingMsg) setStatus(loadingMsg);
+  resultsSection?.classList.add('hidden');
+  try {
+    if (btn) btn.disabled = true;
+    const resp = await fetch(`${API_BASE}/add-shows`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lang: titleLanguage || 'en', personCount })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.state) applyState(data.state, false, false);
+    else await fetchState(false, { preservePair: false, allowCsvFallback: false });
+    const added = data.added ?? data.addedCount ?? data.count ?? data.total;
+    const okTpl = t.statusFetchOk || t.statusLoaded || '';
+    if (added !== undefined && okTpl) setStatus(okTpl.replace('{count}', added));
+    else if (okTpl) setStatus(okTpl);
+    rankerConfirmed = false;
+    updateVoteVisibility();
+    return true;
+  } catch (err) {
+    console.error(err);
+    const prefix = t.statusFetchError || t.statusCsvError || '';
+    setStatus(prefix + err.message);
+    rankerConfirmed = false;
+    updateVoteVisibility();
+    return false;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function resetFilters() {
   const defaults = getRankerDefaults();
   applyRankerDefaultsFromConfig();
@@ -1455,6 +1545,8 @@ function fillTable(tableEl, headers, rows) {
   const tbody = document.createElement('tbody');
   rows.forEach(r => {
     const tr = document.createElement('tr');
+    tr.tabIndex = 0;
+    tr.setAttribute('role', 'row');
     r.forEach(val => { const td = document.createElement('td'); td.textContent = val; tr.appendChild(td); });
     tbody.appendChild(tr);
   });
@@ -1471,6 +1563,8 @@ function renderTop10(ranking) {
     const display = movie.display || getDisplayTitle(item.title);
     const card = document.createElement('div');
     card.className = 'top10-card';
+    card.tabIndex = 0;
+    card.setAttribute('role', 'article');
     const media = document.createElement('div');
     media.className = 'top10-media';
     const img = document.createElement('img');

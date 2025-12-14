@@ -536,6 +536,34 @@ def fetch_movies(filters: List[str], runtime_min=None, runtime_max=None, critic_
     return items
 
 
+def fetch_shows(limit: int = 10000) -> List[Dict[str, Any]]:
+    """Fetch all shows (Series) from Jellyfin without filters."""
+    session = requests.Session()
+    session.headers.update({"X-Emby-Token": API_KEY})
+    params = {
+        "IncludeItemTypes": "Series",
+        "Recursive": "true",
+        "SortBy": "SortName",
+        "SortOrder": "Ascending",
+        "Limit": limit,
+        "Fields": "ProviderIds,ProductionYear,ImageTags,Type,CollectionType",
+        "UserId": USER_ID,
+    }
+    url = f"{JELLYFIN_URL}/Items"
+    resp = session.get(url, params=params)
+    resp.raise_for_status()
+    raw_items = resp.json().get("Items", [])
+    items = [it for it in raw_items if (it.get("Type") == "Series" or it.get("CollectionType") == "tvshows")]
+    if raw_items and not items:
+        # Fallback if server returns unexpected types despite filters
+        items = raw_items
+    try:
+        print(f"Jellyfin URL: {resp.url} | Shows: {len(items)} (raw {len(raw_items)})", flush=True)
+    except Exception:
+        pass
+    return items
+
+
 def download_poster(session, item):
     """Download a poster for a Jellyfin item if missing locally."""
     movie_id = item["Id"]
@@ -896,6 +924,90 @@ def generate():
         compute_pair_coverage(state)
         save_state(state)
         return jsonify({"ok": True, "count": len(movie_list)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/add-shows")
+def add_shows():
+    data = request.get_json(silent=True) or {}
+    lang = (data.get("lang") or "en").lower()
+    tmdb_key = data.get("tmdbKey") or TMDB_API_KEY
+    translate_titles = bool(tmdb_key) and lang != "en"
+    tmdb_session = None
+    if translate_titles:
+        tmdb_session = requests.Session()
+        tmdb_session.params = {"api_key": tmdb_key}
+    try:
+        stored_state = normalize_ranking_state(load_state()) or {}
+        person_count = max(1, int(stored_state.get("personCount") or data.get("personCount") or 1))
+        # Hard reset state so repeated fetches do not accumulate entries.
+        state = {
+            "movies": [],
+            "ratings": {},
+            "comparisonCount": {f"person{i+1}": 0 for i in range(person_count)},
+            "totalVotes": 0,
+            "personCount": person_count,
+            "filters": [],
+            "runtimeMin": None,
+            "runtimeMax": None,
+            "criticMin": None,
+            "criticMax": None,
+            "yearMin": None,
+            "yearMax": None,
+            "rankerConfirmed": False,
+            "pairCounts": {},
+            "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
+        }
+        clear_poster_dir()
+        existing_movies: List[Dict[str, Any]] = []
+        existing_titles = set()
+        existing_ids = set()
+        movies_raw = fetch_shows()
+        session = requests.Session()
+        session.headers.update({"X-Emby-Token": API_KEY})
+        added = 0
+        for item in movies_raw:
+            raw_title = item.get("Name", "Unbenannt")
+            file_title = sanitize_filename(raw_title)
+            jellyfin_id = item.get("Id")
+            item_type = (item.get("Type") or "").lower()
+            collection_type = (item.get("CollectionType") or "").lower()
+            if item_type == "movie" or collection_type == "movies":
+                continue
+            if item_type and item_type not in {"series", "season", "episode", "boxset"} and collection_type != "tvshows":
+                continue
+            if jellyfin_id and jellyfin_id in existing_ids:
+                continue
+            if not file_title or file_title in existing_titles:
+                continue
+            display_title = file_title
+            if translate_titles and tmdb_session:
+                translated = resolve_tmdb_title(tmdb_session, item, lang)
+                if translated:
+                    display_title = sanitize_filename(translated)
+            year = item.get("ProductionYear")
+            download_poster(session, item)
+            entry = {
+                "title": file_title,
+                "display": display_title,
+                "image": f"{file_title}.jpg",
+                "year": year,
+                "jellyfinId": jellyfin_id,
+                "source": "jellyfin",
+            }
+            existing_movies.append(entry)
+            existing_titles.add(file_title)
+            if jellyfin_id:
+                existing_ids.add(jellyfin_id)
+            if file_title not in state["ratings"]:
+                state["ratings"][file_title] = new_rating()
+            added += 1
+        state["movies"] = existing_movies
+        state["rankerConfirmed"] = False
+        compute_pair_coverage(state)
+        save_state(state)
+        return jsonify({"ok": True, "added": added, "total": len(existing_movies), "state": state})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

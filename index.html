@@ -13,8 +13,8 @@
   <div class="app-container">
     <header>
       <div class="tab-bar">
-        <button class="tab active" id="tabRanker" type="button">Ranking</button>
         <button class="tab" id="tabSwiper" type="button">Swipe</button>
+        <button class="tab active" id="tabRanker" type="button">Ranking</button>
         <div class="header-actions">
           <button id="settingsBtn" class="icon-btn" aria-label="Einstellungen">⚙</button>
         </div>
@@ -107,9 +107,9 @@
               </div>
             </div>
 
-            <div class="field-group">
+            <div class="field-group max-movies-group">
               <label for="rankMaxMovies">Max (0 is all)</label>
-              <input type="number" id="rankMaxMovies" min="0" value="0">
+              <input type="number" id="rankMaxMovies" class="max-movies-input" min="0" value="0">
             </div>
 
           <div class="field-group filter-4k">
@@ -125,6 +125,7 @@
             <div class="left-actions">
               <button id="fetchMoviesBtn" class="btn primary">Filme laden</button>
               <button id="loadMoviesBtn" class="btn secondary">CSV laden</button>
+              <button id="addShowsBtn" class="btn secondary" type="button">Add Shows</button>
               </div>
               <div class="right-actions">
                 <button id="resetFiltersBtn" class="btn primary">Filter zuruecksetzen</button>
@@ -142,6 +143,23 @@
 
           <p id="status" class="status-text center"></p>
         </section>
+
+        <details class="card collapsible" id="saveSection">
+          <summary>Save states</summary>
+          <div class="row save-controls">
+            <input id="saveNameInput" class="wide-input" placeholder="Name (optional)">
+            <button id="saveStateBtn" class="btn primary" type="button">Save</button>
+            <button id="refreshSavesBtn" class="btn secondary" type="button">Refresh</button>
+          </div>
+          <div class="field-group">
+            <label for="saveList">Available saves</label>
+            <select id="saveList"></select>
+          </div>
+          <div class="actions">
+            <button id="loadSaveBtn" class="btn secondary" type="button">Load selected</button>
+          </div>
+          <p id="saveStatus" class="status-text"></p>
+        </details>
 
         <section id="voteSection" class="card hidden">
           <div class="card-header">
@@ -161,33 +179,15 @@
               <div class="movie-title" id="rightTitle"></div>
             </div>
           </div>
-        <div class="progress-wrapper">
-          <div class="progress-label" id="progressLabel">Pair coverage: 0%</div>
-          <div class="progress-track">
-            <div class="progress-bar" id="progressBar"></div>
+          <div class="progress-wrapper">
+            <div class="progress-label" id="progressLabel">Pair coverage: 0%</div>
+            <div class="progress-track">
+              <div class="progress-bar" id="progressBar"></div>
+            </div>
           </div>
-        </div>
           <div id="personProgress" class="person-progress"></div>
           <p id="comparisonCount" class="status-text"></p>
           <div class="actions"><button id="showResultsBtn" class="btn primary">Ergebnisse anzeigen</button></div>
-
-        <section class="card nested" id="saveSection">
-          <h3>Save states</h3>
-          <div class="row save-controls">
-            <input id="saveNameInput" class="wide-input" placeholder="Name (optional)">
-            <button id="saveStateBtn" class="btn primary" type="button">Save</button>
-            <button id="refreshSavesBtn" class="btn secondary" type="button">Refresh</button>
-          </div>
-          <div class="field-group">
-            <label for="saveList">Available saves</label>
-            <select id="saveList"></select>
-          </div>
-          <div class="actions">
-            <button id="loadSaveBtn" class="btn secondary" type="button">Load selected</button>
-          </div>
-          <p id="saveStatus" class="status-text"></p>
-        </section>
-
         </section>
 
         <section id="resultsSection" class="card hidden">

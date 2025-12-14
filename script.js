@@ -48,13 +48,7 @@ let languageConfigLoaded = false;
 const DEBUG_SWIPE_FILTER = true;
 const GAMEPAD_DEADZONE = 0.25;
 const GAMEPAD_BUTTONS = { A: 0, B: 1, START: 9, DPAD_UP: 12, DPAD_DOWN: 13, DPAD_LEFT: 14, DPAD_RIGHT: 15 };
-let gamepadFocus = 'left';
-let gamepadPrevButtons = [];
-let gamepadPollId = null;
-let gamepadPrevScroll = 0;
-let focusIndex = 0;
-let lastInputMethod = null; // 'mouse' | 'controller' | null
-let controllerFocusEl = null;
+let controllerNav = null;
 const LOG_CATEGORIES = { dom: 'dom', api: 'api', frontend: 'frontend', errors: 'errors' };
 let appConfig = {
   api: { base: '', port: 5000 },
@@ -542,190 +536,302 @@ function getActiveOverlay() {
   return document.querySelector('.modal-overlay:not(.hidden)');
 }
 
-function clearControllerHighlight() {
-  if (controllerFocusEl) controllerFocusEl.classList.remove('controller-focus');
-  controllerFocusEl = null;
-  leftCard?.classList.remove('hover');
-  rightCard?.classList.remove('hover');
-}
-
-function applyControllerHighlight(el) {
-  if (lastInputMethod !== 'controller') return;
-  if (controllerFocusEl && controllerFocusEl !== el) controllerFocusEl.classList.remove('controller-focus');
-  controllerFocusEl = null;
-  if (!el || !el.classList) return;
-  controllerFocusEl = el;
-  el.classList.add('controller-focus');
-}
-
-function setLastInputMethod(method) {
-  if (!method || lastInputMethod === method) return;
-  lastInputMethod = method;
-  if (method !== 'controller') {
-    clearControllerHighlight();
-  } else {
-    const activeEl = document.activeElement;
-    applyControllerHighlight(activeEl);
-    if (activeEl === leftCard) setGamepadFocus('left');
-    else if (activeEl === rightCard) setGamepadFocus('right');
-  }
-}
-
-function setupInputModeTracking() {
-  const markMouseInput = () => setLastInputMethod('mouse');
-  document.addEventListener('mousemove', markMouseInput, { passive: true });
-  document.addEventListener('mousedown', markMouseInput);
-  document.addEventListener('wheel', markMouseInput, { passive: true });
-  document.addEventListener('touchstart', markMouseInput, { passive: true });
-}
-
-// Returns visible, focusable elements in DOM order for controller navigation.
-function getFocusableElements(container) {
+function closeActiveOverlay() {
   const overlay = getActiveOverlay();
-  const root = container || overlay || document;
-  const selectors = ['button', '[tabindex]:not([tabindex="-1"])', 'a', 'input', 'select', 'textarea'];
-  const nodes = Array.from(root.querySelectorAll(selectors.join(',')));
-  return nodes.filter((el) => {
-    if (!el) return false;
-    if (typeof el.disabled === 'boolean' && el.disabled) return false;
-    if (el.tabIndex !== undefined && el.tabIndex < 0) return false;
-    const isVisible = el.offsetParent !== null || (typeof el.getClientRects === 'function' && el.getClientRects().length > 0);
-    return isVisible;
-  });
-}
-
-// Keeps focusIndex aligned with the currently focused DOM element.
-function syncFocusIndex(focusables = getFocusableElements()) {
-  if (!focusables.length) return -1;
-  const activeIdx = focusables.indexOf(document.activeElement);
-  if (activeIdx !== -1) {
-    focusIndex = activeIdx;
-    return focusIndex;
+  if (!overlay) return false;
+  if (overlay === matchOverlay) {
+    closeMatchModal();
+    return true;
   }
-  if (focusIndex >= focusables.length) focusIndex = 0;
-  return focusIndex;
-}
-
-function moveFocus(delta) {
-  const focusables = getFocusableElements();
-  if (!focusables.length || !delta) return;
-  syncFocusIndex(focusables);
-  focusIndex = (focusIndex + delta + focusables.length) % focusables.length;
-  const target = focusables[focusIndex];
-  if (target && typeof target.focus === 'function') target.focus();
-}
-
-function clickFocused() {
-  const focusables = getFocusableElements();
-  if (!focusables.length) return false;
-  syncFocusIndex(focusables);
-  const target = focusables[focusIndex];
-  if (!target) return false;
-  if (typeof target.focus === 'function') target.focus();
-  if (typeof target.click === 'function') target.click();
+  if (overlay === confirmOverlay) {
+    closeConfirmOverlay();
+    return true;
+  }
+  if (overlay === settingsOverlay) {
+    return closeSettingsOverlay();
+  }
+  overlay.classList.add('hidden');
   return true;
-}
-
-function setGamepadFocus(side) {
-  gamepadFocus = side === 'right' ? 'right' : 'left';
-  const shouldHighlight = lastInputMethod === 'controller';
-  leftCard?.classList.toggle('hover', shouldHighlight && gamepadFocus === 'left');
-  rightCard?.classList.toggle('hover', shouldHighlight && gamepadFocus === 'right');
-}
-
-// Edge-detection helper: returns true only on the transition to pressed.
-function wasButtonPressed(buttonIndex, gp) {
-  const pressedNow = !!(gp?.buttons?.[buttonIndex]?.pressed);
-  const pressedBefore = !!gamepadPrevButtons[buttonIndex];
-  gamepadPrevButtons[buttonIndex] = pressedNow;
-  return pressedNow && !pressedBefore;
 }
 
 function focusFirstInOverlay(overlay) {
   if (!overlay || overlay.classList.contains('hidden')) return;
-  const focusables = getFocusableElements(overlay);
-  if (!focusables.length) return;
-  focusIndex = 0;
-  if (typeof focusables[0].focus === 'function') focusables[0].focus();
+  const selectors = ['button', '[tabindex]:not([tabindex="-1"])', 'a', 'input', 'select', 'textarea'];
+  let target = controllerNav?.findFirstFocusable(overlay);
+  if (!target) target = overlay.querySelector(selectors.join(', '));
+  if (target && typeof target.focus === 'function') target.focus();
+  controllerNav?.syncFromDomFocus(target);
 }
 
-function stopGamepadLoop() {
-  if (gamepadPollId) cancelAnimationFrame(gamepadPollId);
-  gamepadPollId = null;
-  gamepadPrevButtons = [];
-  clearControllerHighlight();
+class ControllerNavigator {
+  constructor() {
+    this.deadzone = GAMEPAD_DEADZONE;
+    this.prevButtons = [];
+    this.pollId = null;
+    this.inputMode = 'mouse';
+    this.lastCardSide = 'left';
+  }
+
+  init() {
+    this.bindPointerTracking();
+    document.addEventListener('focusin', (e) => this.handleFocusChange(e));
+    window.addEventListener('gamepadconnected', () => this.start());
+    window.addEventListener('gamepaddisconnected', () => this.stop());
+    this.start(); // catch already connected pads
+  }
+
+  bindPointerTracking() {
+    const markMouse = () => this.setInputMode('mouse');
+    document.addEventListener('mousemove', markMouse, { passive: true });
+    document.addEventListener('mousedown', markMouse);
+    document.addEventListener('wheel', markMouse, { passive: true });
+    document.addEventListener('touchstart', markMouse, { passive: true });
+  }
+
+  setInputMode(mode) {
+    if (!mode || this.inputMode === mode) return;
+    this.inputMode = mode;
+    if (mode !== 'controller') {
+      this.clearHighlight();
+    } else {
+      this.syncFromDomFocus(document.activeElement);
+    }
+  }
+
+  isFocusable(el) {
+    if (!el) return false;
+    if (el.dataset?.controllerSkip === 'true') return false;
+    if (typeof el.disabled === 'boolean' && el.disabled) return false;
+    if (el.tabIndex !== undefined && el.tabIndex < 0) return false;
+    if (el.closest('.hidden')) return false;
+    const rects = typeof el.getClientRects === 'function' ? el.getClientRects() : [];
+    const visible = el.offsetParent !== null || rects.length > 0;
+    return visible;
+  }
+
+  getScopeRoot(container) {
+    if (container) return container;
+    const overlay = getActiveOverlay();
+    if (overlay) return overlay;
+    // Use document so header / tabs stay reachable; hidden elements are filtered out in isFocusable.
+    return document;
+  }
+
+  getFocusables(container) {
+    const root = this.getScopeRoot(container);
+    const selectors = ['button', '[tabindex]:not([tabindex="-1"])', 'a', 'input', 'select', 'textarea'];
+    const nodes = Array.from(root.querySelectorAll(selectors.join(',')));
+    return nodes.filter((el) => this.isFocusable(el));
+  }
+
+  findFirstFocusable(container) {
+    const focusables = this.getFocusables(container);
+    return focusables[0] || null;
+  }
+
+  handleFocusChange(e) {
+    if (!e?.target) return;
+    if (this.inputMode === 'controller') {
+      this.applyHighlight(e.target);
+    } else {
+      this.clearHighlight();
+    }
+    if (e.target === leftCard) this.lastCardSide = 'left';
+    else if (e.target === rightCard) this.lastCardSide = 'right';
+  }
+
+  applyHighlight(el) {
+    this.clearHighlight();
+    if (!el || !el.classList) return;
+    el.classList.add('controller-focus');
+    this.updateCardHover(el);
+  }
+
+  clearHighlight() {
+    document.querySelectorAll('.controller-focus').forEach((node) => node.classList.remove('controller-focus'));
+    this.updateCardHover(null);
+  }
+
+  updateCardHover(el) {
+    const highlightLeft = el === leftCard;
+    const highlightRight = el === rightCard;
+    leftCard?.classList.toggle('hover', highlightLeft);
+    rightCard?.classList.toggle('hover', highlightRight);
+    if (highlightLeft) this.lastCardSide = 'left';
+    if (highlightRight) this.lastCardSide = 'right';
+  }
+
+  syncFromDomFocus(el = document.activeElement) {
+    if (this.inputMode !== 'controller') return;
+    if (this.isFocusable(el)) {
+      this.applyHighlight(el);
+    } else {
+      this.clearHighlight();
+    }
+  }
+
+  setFocus(el) {
+    if (!el) return;
+    if (typeof el.focus === 'function') el.focus();
+    this.applyHighlight(el);
+  }
+
+  pickNext(dir) {
+    const focusables = this.getFocusables();
+    if (!focusables.length) return null;
+    const current = this.isFocusable(document.activeElement) && focusables.includes(document.activeElement)
+      ? document.activeElement
+      : focusables[0];
+    if (current !== document.activeElement) {
+      if (typeof current.focus === 'function') current.focus();
+    }
+    const rect = current.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const margin = 6;
+    const forward = dir === 'right' || dir === 'down';
+    const dirVec = {
+      right: { x: 1, y: 0 },
+      left: { x: -1, y: 0 },
+      up: { x: 0, y: -1 },
+      down: { x: 0, y: 1 }
+    }[dir] || { x: 0, y: 0 };
+
+    const candidates = focusables
+      .filter((el) => el !== current)
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const dx = x - cx;
+        const dy = y - cy;
+        const dist = Math.hypot(dx, dy) || 0.0001;
+        const forwardComponent = dx * dirVec.x + dy * dirVec.y;
+        const alignment = forwardComponent / dist; // cos angle to desired direction
+        const anglePenalty = 1 - alignment; // 0 when perfectly aligned
+        const score = anglePenalty * 1000 + dist;
+        return { el, dx, dy, dist, forwardComponent, score };
+      })
+      .filter((c) => {
+        if (dir === 'right') return c.dx > margin;
+        if (dir === 'left') return c.dx < -margin;
+        if (dir === 'down') return c.dy > margin;
+        if (dir === 'up') return c.dy < -margin;
+        return true;
+      })
+      .filter((c) => c.forwardComponent > 0) // ensure roughly in front
+      .sort((a, b) => a.score - b.score);
+
+    if (candidates.length) return candidates[0].el;
+    const idx = focusables.indexOf(current);
+    if (idx === -1) return focusables[0];
+    const delta = forward ? 1 : -1;
+    return focusables[(idx + delta + focusables.length) % focusables.length];
+  }
+
+  move(dir) {
+    const next = this.pickNext(dir);
+    if (next) this.setFocus(next);
+  }
+
+  activateFocused() {
+    const el = this.isFocusable(document.activeElement) ? document.activeElement : this.findFirstFocusable();
+    if (!el) return;
+    if (typeof el.click === 'function') el.click();
+  }
+
+  focusCard(side) {
+    const target = side === 'right' ? rightCard : leftCard;
+    if (!target) return;
+    this.lastCardSide = side === 'right' ? 'right' : 'left';
+    this.setFocus(target);
+  }
+
+  restoreCardFocus() {
+    if (this.inputMode !== 'controller') return;
+    this.focusCard(this.lastCardSide);
+  }
+
+  start() {
+    if (this.pollId) return;
+    this.pollId = requestAnimationFrame(() => this.frame());
+  }
+
+  stop() {
+    if (this.pollId) cancelAnimationFrame(this.pollId);
+    this.pollId = null;
+    this.prevButtons = [];
+    this.clearHighlight();
+  }
+
+  wasPressed(idx, gp) {
+    const pressed = !!(gp?.buttons?.[idx]?.pressed);
+    const before = !!this.prevButtons[idx];
+    this.prevButtons[idx] = pressed;
+    return pressed && !before;
+  }
+
+  handleScroll(axisVal) {
+    if (Math.abs(axisVal) <= this.deadzone) return false;
+    window.scrollBy(0, axisVal * 20);
+    return true;
+  }
+
+  frame() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = pads && pads[0];
+    if (!gp) {
+      this.prevButtons = [];
+      this.pollId = requestAnimationFrame(() => this.frame());
+      return;
+    }
+    let used = false;
+    const axisX = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+    const axisScroll = gp.axes && gp.axes.length > 3 ? gp.axes[3] : 0;
+
+    const dpadRight = this.wasPressed(GAMEPAD_BUTTONS.DPAD_RIGHT, gp);
+    const dpadLeft = this.wasPressed(GAMEPAD_BUTTONS.DPAD_LEFT, gp);
+    const dpadUp = this.wasPressed(GAMEPAD_BUTTONS.DPAD_UP, gp);
+    const dpadDown = this.wasPressed(GAMEPAD_BUTTONS.DPAD_DOWN, gp);
+
+    if (dpadRight) { this.setInputMode('controller'); this.move('right'); used = true; }
+    if (dpadLeft) { this.setInputMode('controller'); this.move('left'); used = true; }
+    if (dpadDown) { this.setInputMode('controller'); this.move('down'); used = true; }
+    if (dpadUp) { this.setInputMode('controller'); this.move('up'); used = true; }
+
+    if (this.wasPressed(GAMEPAD_BUTTONS.A, gp)) { this.setInputMode('controller'); this.activateFocused(); used = true; }
+
+    if (this.wasPressed(GAMEPAD_BUTTONS.START, gp)) {
+      this.setInputMode('controller');
+      openSettingsOverlay();
+      used = true;
+    }
+
+    if (this.wasPressed(GAMEPAD_BUTTONS.B, gp)) {
+      this.setInputMode('controller');
+      const closed = closeActiveOverlay();
+      if (!closed && activeSection === 'ranker') this.focusCard(this.lastCardSide);
+      used = true;
+    }
+
+    // Left stick horizontal toggles the two voting cards.
+    if (axisX < -this.deadzone) { this.setInputMode('controller'); this.focusCard('left'); used = true; }
+    if (axisX > this.deadzone) { this.setInputMode('controller'); this.focusCard('right'); used = true; }
+
+    if (this.handleScroll(axisScroll)) {
+      this.setInputMode('controller');
+      used = true;
+    }
+
+    if (used) this.syncFromDomFocus(document.activeElement);
+    this.pollId = requestAnimationFrame(() => this.frame());
+  }
 }
 
-function gamepadFrame() {
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  const gp = pads && pads[0];
-  if (!gp) {
-    gamepadPrevButtons = [];
-    gamepadPollId = requestAnimationFrame(gamepadFrame);
-    return;
-  }
-  const axisX = gp.axes && gp.axes.length ? gp.axes[0] : 0;
-  const axisScroll = gp.axes && gp.axes.length > 3 ? gp.axes[3] : 0;
-  let controllerUsed = false;
-
-  const dpadRight = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_RIGHT, gp);
-  const dpadDown = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_DOWN, gp);
-  const dpadLeft = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_LEFT, gp);
-  const dpadUp = wasButtonPressed(GAMEPAD_BUTTONS.DPAD_UP, gp);
-  const moveNext = dpadRight || dpadDown;
-  const movePrev = dpadLeft || dpadUp;
-  if (moveNext) { setLastInputMethod('controller'); moveFocus(1); controllerUsed = true; }
-  if (movePrev) { setLastInputMethod('controller'); moveFocus(-1); controllerUsed = true; }
-
-  if (wasButtonPressed(GAMEPAD_BUTTONS.A, gp)) { setLastInputMethod('controller'); clickFocused(); controllerUsed = true; }
-
-  const settingsOpen = settingsOverlay && !settingsOverlay.classList.contains('hidden');
-  if (wasButtonPressed(GAMEPAD_BUTTONS.START, gp)) {
-    setLastInputMethod('controller');
-    settingsOverlay?.classList.remove('hidden');
-    focusFirstInOverlay(settingsOverlay);
-    controllerUsed = true;
-  }
-  if (settingsOpen && wasButtonPressed(GAMEPAD_BUTTONS.B, gp)) {
-    setLastInputMethod('controller');
-    settingsOverlay?.classList.add('hidden');
-    if (settingsBtn && typeof settingsBtn.focus === 'function') settingsBtn.focus();
-    controllerUsed = true;
-  }
-
-  // Left stick horizontal still toggles the two voting cards.
-  if (axisX < -GAMEPAD_DEADZONE) { setLastInputMethod('controller'); setGamepadFocus('left'); controllerUsed = true; }
-  if (axisX > GAMEPAD_DEADZONE) { setLastInputMethod('controller'); setGamepadFocus('right'); controllerUsed = true; }
-
-  // Right stick vertical scroll
-  if (Math.abs(axisScroll) > GAMEPAD_DEADZONE) {
-    const delta = axisScroll * 15; // tune scroll speed
-    window.scrollBy(0, delta);
-    gamepadPrevScroll = axisScroll;
-    setLastInputMethod('controller');
-    controllerUsed = true;
-  } else {
-    gamepadPrevScroll = 0;
-  }
-
-  if (controllerUsed) applyControllerHighlight(document.activeElement);
-
-  gamepadPollId = requestAnimationFrame(gamepadFrame);
-}
-
-// Keep controller navigation in sync when focus changes via mouse/keyboard.
-function handleFocusChange(e) {
-  const focusables = getFocusableElements();
-  const idx = focusables.indexOf(e.target);
-  if (idx !== -1) focusIndex = idx;
-  if (lastInputMethod === 'controller') applyControllerHighlight(e.target);
-  else clearControllerHighlight();
-  if (e.target === leftCard) setGamepadFocus('left');
-  else if (e.target === rightCard) setGamepadFocus('right');
-  else {
-    leftCard?.classList.remove('hover');
-    rightCard?.classList.remove('hover');
-  }
+function setupControllerNavigation() {
+  if (controllerNav) return;
+  controllerNav = new ControllerNavigator();
+  controllerNav.init();
 }
 
 function ensureSwipeFilterCheckboxes() {
@@ -759,21 +865,26 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 
+function openSettingsOverlay() {
+  settingsOverlay?.classList.remove('hidden');
+  focusFirstInOverlay(settingsOverlay);
+}
+
+function closeSettingsOverlay() {
+  if (!settingsOverlay) return false;
+  if (settingsOverlay.classList.contains('hidden')) return false;
+  settingsOverlay.classList.add('hidden');
+  if (settingsBtn && typeof settingsBtn.focus === 'function') settingsBtn.focus();
+  return true;
+}
+
 function setupSettingsModal() {
-  const openModal = () => {
-    settingsOverlay?.classList.remove('hidden');
-    focusFirstInOverlay(settingsOverlay);
-  };
-  const closeModal = () => {
-    settingsOverlay?.classList.add('hidden');
-    if (settingsBtn && typeof settingsBtn.focus === 'function') settingsBtn.focus();
-  };
-  settingsBtn?.addEventListener('click', openModal);
-  settingsClose?.addEventListener('click', closeModal);
-  settingsCancel?.addEventListener('click', closeModal);
+  settingsBtn?.addEventListener('click', openSettingsOverlay);
+  settingsClose?.addEventListener('click', closeSettingsOverlay);
+  settingsCancel?.addEventListener('click', closeSettingsOverlay);
   resetAllBtn?.addEventListener('click', resetAllStates);
   settingsOverlay?.addEventListener('click', (e) => {
-    if (e.target === settingsOverlay) closeModal();
+    if (e.target === settingsOverlay) closeSettingsOverlay();
   });
   titleLanguageSelect?.addEventListener('change', () => {
     titleLanguage = titleLanguageSelect.value;
@@ -788,25 +899,26 @@ function setupSettingsModal() {
     localStorage.setItem('uiLanguage', uiLanguage);
     localStorage.setItem('titleLanguage', titleLanguage);
     applyUILanguage();
-    settingsOverlay?.classList.add('hidden');
+    closeSettingsOverlay();
     await loadSwipeSuggestions(true);
   });
 }
 
 let pendingConfirmAction = null;
 
+function closeConfirmOverlay() {
+  if (confirmOverlay) confirmOverlay.classList.add('hidden');
+  pendingConfirmAction = null;
+}
+
 function setupConfirmModal() {
-  const closeConfirm = () => {
-    if (confirmOverlay) confirmOverlay.classList.add('hidden');
-    pendingConfirmAction = null;
-  };
-  confirmCancel?.addEventListener('click', closeConfirm);
+  confirmCancel?.addEventListener('click', closeConfirmOverlay);
   confirmOverlay?.addEventListener('click', (e) => {
-    if (e.target === confirmOverlay) closeConfirm();
+    if (e.target === confirmOverlay) closeConfirmOverlay();
   });
   confirmOk?.addEventListener('click', () => {
     const action = pendingConfirmAction;
-    closeConfirm();
+    closeConfirmOverlay();
     if (typeof action === 'function') action();
   });
 }
@@ -983,8 +1095,6 @@ async function init() {
     });
     observer.observe(swFilterMenu, { childList: true, subtree: true });
   }
-  window.addEventListener('gamepadconnected', () => { if (!gamepadPollId) gamepadFrame(); });
-  window.addEventListener('gamepaddisconnected', stopGamepadLoop);
   applyAppConfigDefaults();
   await initLanguages();
   bindEvents();
@@ -1002,7 +1112,6 @@ async function initLanguages() {
 }
 
 function bindEvents() {
-  setupInputModeTracking();
   loadMoviesBtn?.addEventListener('click', loadMoviesFromCsv);
   addShowsBtn?.addEventListener('click', addShowsFromJellyfin);
   fetchMoviesBtn?.addEventListener('click', () => fetchAndLoadMovies());
@@ -1033,7 +1142,6 @@ function bindEvents() {
 
   [runtimeMenu, criticMenu, yearMenu, swFilterMenu, swRuntimeMenu, swCriticMenu, swYearMenu].forEach(menu => menu?.addEventListener('click', (e) => e.stopPropagation()));
   document.addEventListener('click', handleOutsideClick);
-  document.addEventListener('focusin', handleFocusChange);
 
   const rankDefaults = getRankerDefaults();
   const swipeDefaults = getSwipeDefaults();
@@ -1084,6 +1192,7 @@ function bindEvents() {
   downloadRankingCsvBtn?.addEventListener('click', downloadRankingCsv);
   matchContinue?.addEventListener('click', closeMatchModal);
   matchOverlay?.addEventListener('click', (e) => { if (e.target === matchOverlay) closeMatchModal(); });
+  setupControllerNavigation();
 }
 
 function setDefaults() {
@@ -1482,7 +1591,7 @@ function renderPair() {
   leftImage.alt = leftLabel;
   rightImage.src = resolveMovieImage(right);
   rightImage.alt = rightLabel;
-  setGamepadFocus(gamepadFocus);
+  controllerNav?.restoreCardFocus();
 }
 
 async function vote(winnerIndex) {

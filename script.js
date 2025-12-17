@@ -3,11 +3,15 @@
 let API_BASE = '';
 let TS_MU = 1500;
 let TS_SIGMA = 400;
+let TS_BETA = TS_SIGMA / 2;
+let TS_TAU = TS_SIGMA / 100;
+let TS_DRAW_PROB = 0;
 
 let movies = [];
 let movieByTitle = {};
 let ratings = {};
 let comparisonCount = {};
+let pairCounts = {};
 let persons = [];
 let personCount = 1;
 let currentPerson = 'person1';
@@ -38,6 +42,9 @@ let activeSection = 'ranker';
 let matchQueue = [];
 let seenMatches = new Set();
 let matchModalOpen = false;
+// In-memory buffer of recently shown pairs to avoid short-term repetition.
+let recentPairHistory = [];
+let recentPairCounts = {};
 let swMaxMovies = Infinity;
 let rankMaxMovies = Infinity;
 let uiLanguage = '';
@@ -1199,6 +1206,7 @@ function setDefaults() {
   personCount = Math.max(1, parseInt(numPersonsSelect?.value || '1', 10));
   persons = Array.from({ length: personCount }, (_, i) => `person${i + 1}`);
   comparisonCount = persons.reduce((acc, p) => ({ ...acc, [p]: 0 }), {});
+  pairCounts = {};
   currentPerson = persons[0];
   renderPersonButtons();
   updateCurrentPersonLabel();
@@ -1279,8 +1287,7 @@ function applyState(state, preservePair = false, skipPickPair = false) {
   const defaults = getRankerDefaults();
   movies = (state.movies || []).map(normalizeMovieImage);
   const tsCfg = state.tsConfig || {};
-  TS_MU = !isNaN(parseFloat(tsCfg.mu)) ? parseFloat(tsCfg.mu) : TS_MU;
-  TS_SIGMA = !isNaN(parseFloat(tsCfg.sigma)) ? parseFloat(tsCfg.sigma) : TS_SIGMA;
+  applyTsConfig(tsCfg);
   movieByTitle = Object.fromEntries((movies || []).map(m => [m.title, m]));
   const incomingRatings = state.ratings || {};
   const normalizedRatings = {};
@@ -1290,6 +1297,7 @@ function applyState(state, preservePair = false, skipPickPair = false) {
   });
   ratings = normalizedRatings;
   comparisonCount = state.comparisonCount || {};
+  pairCounts = state.pairCounts || {};
   personCount = Math.max(1, parseInt(state.personCount || 1, 10));
   persons = Array.from({ length: personCount }, (_, i) => `person${i + 1}`);
   persons.forEach(p => { if (comparisonCount[p] === undefined) comparisonCount[p] = 0; });
@@ -1540,6 +1548,21 @@ function linkRangeInputs(rangeMin, rangeMax, numMin, numMax, minVal, maxVal, onC
   syncFromRange();
 }
 
+function applyTsConfig(cfg) {
+  const config = cfg || {};
+  const mu = parseFloat(config.mu);
+  const sigma = parseFloat(config.sigma);
+  const beta = parseFloat(config.beta);
+  const tau = parseFloat(config.tau);
+  const draw = parseFloat(config.drawProbability);
+  TS_MU = !isNaN(mu) ? mu : TS_MU;
+  const nextSigma = !isNaN(sigma) ? sigma : TS_SIGMA;
+  TS_SIGMA = nextSigma;
+  TS_BETA = !isNaN(beta) ? beta : nextSigma / 2;
+  TS_TAU = !isNaN(tau) ? tau : nextSigma / 100;
+  TS_DRAW_PROB = !isNaN(draw) ? draw : TS_DRAW_PROB;
+}
+
 function ensureTsRating(entry) {
   const base = entry || {};
   const mu = parseFloat(base.ts_mu ?? base.rating ?? TS_MU);
@@ -1553,11 +1576,84 @@ function ensureTsRating(entry) {
 }
 
 function thompsonSample(title) {
-  const entry = ratings[title];
-  if (!entry) return -Infinity;
+  const entry = ensureTsRating(ratings[title]);
+  ratings[title] = entry;
   const mu = entry.ts_mu ?? TS_MU;
   const sigma = entry.ts_sigma ?? TS_SIGMA;
   return mu + randomNormal() * sigma;
+}
+
+function normalizedPairKey(a, b) {
+  return [a || '', b || ''].sort().join('||');
+}
+
+function trimRecentPairs(limit) {
+  while (recentPairHistory.length > limit) {
+    const old = recentPairHistory.shift();
+    if (!old) continue;
+    recentPairCounts[old] = (recentPairCounts[old] || 0) - 1;
+    if (recentPairCounts[old] <= 0) delete recentPairCounts[old];
+  }
+}
+
+function rememberRecentPair(a, b, limit) {
+  if (!a || !b) return;
+  const key = normalizedPairKey(a, b);
+  recentPairHistory.push(key);
+  recentPairCounts[key] = (recentPairCounts[key] || 0) + 1;
+  trimRecentPairs(limit);
+}
+
+function wasPairRecent(a, b) {
+  const key = normalizedPairKey(a, b);
+  return !!recentPairCounts[key];
+}
+
+function getRecencyLimit(count) {
+  return Math.max(20, Math.min(60, Math.round(count * 0.6)));
+}
+
+function buildOverallPairCounts(counts) {
+  const overall = {};
+  Object.values(counts || {}).forEach(map => {
+    Object.entries(map || {}).forEach(([key, val]) => {
+      const v = parseInt(val, 10) || 0;
+      overall[key] = (overall[key] || 0) + v;
+    });
+  });
+  return overall;
+}
+
+function getPairCount(person, key) {
+  if (!key) return 0;
+  const map = pairCounts?.[person] || {};
+  return parseInt(map[key], 10) || 0;
+}
+
+function matchQuality(a, b) {
+  if (!a || !b) return 0;
+  const muA = a.ts_mu ?? TS_MU;
+  const muB = b.ts_mu ?? TS_MU;
+  const sigmaA = a.ts_sigma ?? TS_SIGMA;
+  const sigmaB = b.ts_sigma ?? TS_SIGMA;
+  const beta = TS_BETA || (TS_SIGMA / 2) || 1;
+  const denom = 2 * beta * beta + sigmaA * sigmaA + sigmaB * sigmaB;
+  if (denom <= 0) return 0;
+  const expPart = Math.exp(-((muA - muB) ** 2) / (2 * denom));
+  return Math.sqrt((2 * beta * beta) / denom) * expPart;
+}
+
+function weightedPick(scored) {
+  const items = scored || [];
+  const total = items.reduce((sum, s) => sum + Math.max(0, s.weight || s.score || 0), 0);
+  if (total <= 0) return items[0]?.entry || null;
+  let r = Math.random() * total;
+  for (const s of items) {
+    const w = Math.max(0, s.weight || s.score || 0);
+    r -= w;
+    if (r <= 0) return s.entry || null;
+  }
+  return items[items.length - 1]?.entry || null;
 }
 
 function pickPair() {
@@ -1572,11 +1668,57 @@ function pickPair() {
       return;
     }
   }
-  const sampled = Object.keys(ratings).map(title => ({ title, score: thompsonSample(title) }));
-  sampled.sort((a, b) => b.score - a.score);
-  const topTwo = sampled.slice(0, 2);
-  if (topTwo.length < 2) return;
-  currentPair = [movieByTitle[topTwo[0].title], movieByTitle[topTwo[1].title]];
+
+  const entries = movies
+    .map((m) => {
+      const rating = ensureTsRating(ratings[m.title]);
+      ratings[m.title] = rating;
+      return { movie: m, title: m.title, rating };
+    })
+    .filter(e => e.title);
+  if (entries.length < 2) return;
+
+  const overallPairCounts = buildOverallPairCounts(pairCounts);
+  const focusWeights = entries.map((e) => {
+    const games = e.rating.games || 0;
+    const sigma = e.rating.ts_sigma ?? TS_SIGMA;
+    const uncertaintyFactor = 1 + (sigma / Math.max(1, TS_SIGMA));
+    const fatiguePenalty = Math.pow(1 + games, 0.65);
+    const thompson = thompsonSample(e.title);
+    // Weight toward uncertain/underplayed, while still allowing favourites to appear.
+    const weight = (uncertaintyFactor / fatiguePenalty) + (thompson / Math.max(1, TS_MU * 4));
+    return { entry: e, weight };
+  });
+
+  const focus = weightedPick(focusWeights) || entries[Math.floor(Math.random() * entries.length)];
+  if (!focus) return;
+
+  const opponents = entries.filter(e => e.title !== focus.title);
+  if (!opponents.length) return;
+
+  const recencyLimit = getRecencyLimit(entries.length);
+  trimRecentPairs(recencyLimit);
+  const scoredOpponents = opponents.map(e => {
+    const pairKey = normalizedPairKey(focus.title, e.title);
+    const quality = matchQuality(focus.rating, e.rating);
+    const combinedUncertainty = ((focus.rating.ts_sigma ?? TS_SIGMA) + (e.rating.ts_sigma ?? TS_SIGMA)) / Math.max(1, TS_SIGMA * 2);
+    const seenByPerson = getPairCount(currentPerson, pairKey);
+    const seenOverall = overallPairCounts[pairKey] || 0;
+    const coverageBonus = seenByPerson === 0 ? 1.2 : seenByPerson <= 2 ? 0.4 : 0;
+    const freqPenalty = Math.log1p(seenByPerson) * 0.7 + Math.log1p(seenOverall) * 0.35;
+    const recentPenalty = wasPairRecent(focus.title, e.title) ? 0.8 : 0;
+    const jitter = Math.random() * 0.01;
+    const score = quality + combinedUncertainty + coverageBonus - freqPenalty - recentPenalty + jitter;
+    return { entry: e, score };
+  });
+  scoredOpponents.sort((a, b) => b.score - a.score);
+  const opponent = scoredOpponents[0]?.entry;
+  if (!opponent) return;
+
+  const leftMovie = movieByTitle[focus.title] || focus.movie;
+  const rightMovie = movieByTitle[opponent.title] || opponent.movie;
+  currentPair = [leftMovie, rightMovie];
+  rememberRecentPair(focus.title, opponent.title, recencyLimit);
   renderPair();
 }
 

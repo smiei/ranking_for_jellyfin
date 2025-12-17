@@ -104,6 +104,15 @@ TS_ENV = trueskill.TrueSkill(
     tau=TS_TAU,
     draw_probability=TS_DRAW_PROB,
 )
+# Expose the active TrueSkill configuration so it can be persisted with state.
+def current_ts_config() -> Dict[str, float]:
+    return {
+        "mu": TS_ENV.mu,
+        "sigma": TS_ENV.sigma,
+        "beta": TS_ENV.beta,
+        "tau": TS_ENV.tau,
+        "drawProbability": TS_ENV.draw_probability,
+    }
 # =======================
 
 app = Flask(__name__)
@@ -222,7 +231,10 @@ def normalize_ranking_state(state: Optional[Dict[str, Any]]) -> Optional[Dict[st
     state["ratings"] = normalized
     ensure_pair_counts(state)
     compute_pair_coverage(state)
-    state.setdefault("tsConfig", {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma})
+    base_cfg = current_ts_config()
+    existing_cfg = state.get("tsConfig") or {}
+    merged_cfg = {**base_cfg, **existing_cfg}
+    state["tsConfig"] = merged_cfg
     return state
 
 
@@ -455,7 +467,7 @@ def load_movies_from_csv() -> Dict[str, Any]:
         "yearMax": existing_state.get("yearMax"),
         "rankerConfirmed": False,
         "pairCounts": {},
-        "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
+        "tsConfig": current_ts_config(),
     }
     state.update(EMPTY_RANK_STATE_EXTRA)
     compute_pair_coverage(state)
@@ -774,7 +786,7 @@ def reset_all():
             "pairCounts": {},
             "pairCoverage": {"coveredPairs": 0, "totalPairs": 0, "ratio": 0},
             "pairCoveragePerPerson": {},
-            "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
+            "tsConfig": current_ts_config(),
         })
         save_swipe_state(EMPTY_SWIPE_STATE.copy())
         return jsonify({"ok": True})
@@ -919,7 +931,7 @@ def generate():
             "yearMax": year_max,
             "rankerConfirmed": False,
             "pairCounts": {},
-            "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
+            "tsConfig": current_ts_config(),
         }
         compute_pair_coverage(state)
         save_state(state)
@@ -957,7 +969,7 @@ def add_shows():
             "yearMax": None,
             "rankerConfirmed": False,
             "pairCounts": {},
-            "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
+            "tsConfig": current_ts_config(),
         }
         clear_poster_dir()
         existing_movies: List[Dict[str, Any]] = []
@@ -1040,7 +1052,7 @@ def reset_state():
         "personCount": person_count,
         "rankerConfirmed": False,
         "pairCounts": {},
-        "tsConfig": {"mu": TS_ENV.mu, "sigma": TS_ENV.sigma},
+        "tsConfig": current_ts_config(),
     })
     compute_pair_coverage(state)
     save_state(state)

@@ -20,6 +20,7 @@ let totalVotes = 0;
 let pairCoverage = { coveredPairs: 0, totalPairs: 0, ratio: 0 };
 let pairCoveragePerPerson = {};
 let rankerConfirmed = false;
+let resultsExpanded = false;
 let csvFallbackAttempted = false;
 // Swiper state
 let swipeSuggestions = [];
@@ -342,10 +343,11 @@ function applyUILanguage() {
   setText(showResultsBtn, t.showResults);
   setText('#resultsSection h2', t.resultsTitle);
   setText('#voteSection h2', t.compareTitle);
-  setText('#top10Card h3', t.top10Title);
-  setText(downloadTop10Btn, t.downloadTop10);
+  setText('#top50Card h3', t.top50Title || t.top10Title);
+  setText(downloadTop50Btn, t.downloadTop50 || t.downloadTop10);
   setText(downloadRankingCsvBtn, t.downloadRankingCsv || 'CSV Download');
   setText('#rankingCard summary', t.rankingTitle);
+  setText('#rankedMoviesSummary', t.loadedList || 'Loaded items');
   setText('#swiperSection .page-subtitle h2', t.swiperTitle);
   setText('#swipeSetupTitle', t.swipeHeading);
   if (swipeStatus) swipeStatus.textContent = '';
@@ -358,6 +360,7 @@ function applyUILanguage() {
   setText(sourceFilteredOption, t.swipeSourceFiltered);
   setText(swLoadFilteredBtn, t.loadFiltered || t.fetchBtn);
   setText(swResetFiltersBtn, t.resetFilters);
+  setText(swAddShowsBtn, t.addShowsBtn || 'Add Shows');
   setText(swClearListBtn, t.clearList);
   setText(confirmSetupBtn, t.confirm);
   setText(confirmSwipeBtn, t.confirm);
@@ -410,6 +413,7 @@ function applyUILanguage() {
   updateMovieCountLabel();
   updateSwipeCard();
   updateSelectedMoviesSummary();
+  updateResultsToggleLabel();
 }
 
 function setSaveStatus(msg) {
@@ -611,6 +615,10 @@ class ControllerNavigator {
     if (typeof el.disabled === 'boolean' && el.disabled) return false;
     if (el.tabIndex !== undefined && el.tabIndex < 0) return false;
     if (el.closest('.hidden')) return false;
+    if (el.closest('[hidden]')) return false;
+    const detailsParent = el.closest('details');
+    if (detailsParent && !detailsParent.open && el.tagName.toLowerCase() !== 'summary') return false;
+    if (el.closest('[aria-hidden="true"]')) return false;
     const rects = typeof el.getClientRects === 'function' ? el.getClientRects() : [];
     const visible = el.offsetParent !== null || rects.length > 0;
     return visible;
@@ -841,6 +849,10 @@ function setupControllerNavigation() {
   controllerNav.init();
 }
 
+function refreshControllerNavigation() {
+  controllerNav?.syncFromDomFocus(document.activeElement);
+}
+
 function ensureSwipeFilterCheckboxes() {
   if (!swFilterMenu) return;
   swFilterUnplayed = document.getElementById('swFilterUnplayed');
@@ -948,7 +960,6 @@ const resultsSection = document.getElementById('resultsSection');
 const currentPersonLabel = document.getElementById('currentPersonLabel');
 const movieCountLabel = document.getElementById('movieCountLabel');
 const comparisonCountEl = document.getElementById('comparisonCount');
-const top10Container = document.getElementById('top10Container');
 const tableAverage = document.getElementById('tableAverage');
 const numPersonsSelect = document.getElementById('numPersonsSelect');
 const applyPersonsBtn = document.getElementById('applyPersonsBtn');
@@ -1064,7 +1075,7 @@ const progressLabel = document.getElementById('progressLabel');
 const personProgress = document.getElementById('personProgress');
 const confirmSetupBtn = document.getElementById('confirmSetupBtn');
 const confirmSwipeBtn = document.getElementById('confirmSwipeBtn');
-const downloadTop10Btn = document.getElementById('downloadTop10Btn');
+const downloadTop50Btn = document.getElementById('downloadTop50Btn');
 const downloadRankingCsvBtn = document.getElementById('downloadRankingCsvBtn');
 const showResultsBtn = document.getElementById('showResultsBtn');
 const pairContainer = document.getElementById('pairContainer');
@@ -1084,6 +1095,11 @@ const loadSaveBtn = document.getElementById('loadSaveBtn');
 const saveList = document.getElementById('saveList');
 const saveStatus = document.getElementById('saveStatus');
 const addShowsBtn = document.getElementById('addShowsBtn');
+const rankedMoviesWrap = document.getElementById('rankedMoviesWrap');
+const rankedMoviesList = document.getElementById('rankedMoviesList');
+const rankedMoviesSummary = document.getElementById('rankedMoviesSummary');
+const top50Container = document.getElementById('top50Container');
+const swAddShowsBtn = document.getElementById('swAddShowsBtn');
 
 init();
 
@@ -1123,12 +1139,13 @@ function bindEvents() {
   addShowsBtn?.addEventListener('click', addShowsFromJellyfin);
   fetchMoviesBtn?.addEventListener('click', () => fetchAndLoadMovies());
   resetFiltersBtn?.addEventListener('click', resetFilters);
-  showResultsBtn?.addEventListener('click', showResults);
-  downloadTop10Btn?.addEventListener('click', downloadTop10Image);
+  showResultsBtn?.addEventListener('click', toggleResults);
+  downloadTop50Btn?.addEventListener('click', downloadTop50Image);
   saveStateBtn?.addEventListener('click', saveSnapshot);
   refreshSavesBtn?.addEventListener('click', fetchSaveList);
   loadSaveBtn?.addEventListener('click', loadSnapshot);
   applyPersonsBtn?.addEventListener('click', onApplyPersons);
+  swAddShowsBtn?.addEventListener('click', addShowsToSwipe);
 
   // person buttons handled in renderPersonButtons
 
@@ -1212,6 +1229,7 @@ function setDefaults() {
   updateCurrentPersonLabel();
   setAccentForPerson(currentPerson);
   updateMovieCountLabel();
+  renderRankedMoviesList();
   updateFilterLabel();
   updateRuntimeLabel();
   updateCriticLabel();
@@ -1285,7 +1303,12 @@ async function loadMoviesFromCsv() {
 function applyState(state, preservePair = false, skipPickPair = false) {
   if (!state) return;
   const defaults = getRankerDefaults();
-  movies = (state.movies || []).map(normalizeMovieImage);
+  const wasExpanded = resultsExpanded;
+  const prevTitles = new Set((movies || []).map(m => m.title));
+  const incomingMovies = (state.movies || []).map(normalizeMovieImage);
+  const moviesChanged = incomingMovies.length !== (movies?.length || 0)
+    || incomingMovies.some(m => !prevTitles.has(m.title));
+  movies = incomingMovies;
   const tsCfg = state.tsConfig || {};
   applyTsConfig(tsCfg);
   movieByTitle = Object.fromEntries((movies || []).map(m => [m.title, m]));
@@ -1358,9 +1381,21 @@ function applyState(state, preservePair = false, skipPickPair = false) {
 
   updateProgress();
   updateMovieCountLabel();
+  if (moviesChanged && movies.length > 0 && rankedMoviesWrap) rankedMoviesWrap.open = true;
+  renderRankedMoviesList();
   updateComparisonCountText();
   updatePersonProgress();
   updateVoteVisibility(preservePair, skipPickPair);
+
+  if (moviesChanged) {
+    resultsExpanded = false;
+    resultsSection?.classList.add('hidden');
+    updateResultsToggleLabel();
+  } else if (wasExpanded) {
+    setResultsVisibility(true);
+  } else {
+    updateResultsToggleLabel();
+  }
 }
 
 async function fetchAndLoadMovies(statusHandler) {
@@ -1433,6 +1468,36 @@ async function addShowsFromJellyfin() {
     return false;
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+
+async function removeRankedMovie(movie) {
+  if (!movie || !movie.title) return;
+  const t = getT();
+  const prefix = t.statusRemoving || '';
+  if (prefix) setStatus(`${prefix} ${movie.display || movie.title}`.trim());
+  try {
+    const resp = await fetch(`${API_BASE}/remove-movie`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: movie.title, jellyfinId: movie.jellyfinId })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.state) applyState(data.state, false, true);
+    else {
+      movies = movies.filter(m => m.title !== movie.title);
+      delete ratings[movie.title];
+      updateProgress();
+      updateMovieCountLabel();
+      renderRankedMoviesList();
+      updateVoteVisibility(true, true);
+    }
+    const okMsg = t.statusRemoveOk || t.statusLoaded || '';
+    if (okMsg) setStatus(okMsg.replace('{title}', movie.display || movie.title));
+  } catch (err) {
+    const errPrefix = t.statusRemoveError || t.statusFetchError || '';
+    setStatus(errPrefix + err.message);
   }
 }
 
@@ -1804,12 +1869,12 @@ function fillTable(tableEl, headers, rows) {
   tableEl.appendChild(tbody);
 }
 
-function renderTop10(ranking) {
-  if (!top10Container) return;
-  top10Container.innerHTML = '';
+function renderTop50(ranking) {
+  if (!top50Container) return;
+  top50Container.innerHTML = '';
   const grid = document.createElement('div');
   grid.className = 'top10-grid';
-  ranking.slice(0, 10).forEach((item, idx) => {
+  ranking.slice(0, 50).forEach((item, idx) => {
     const movie = movieByTitle[item.title] || { image: '', title: item.title };
     const display = movie.display || getDisplayTitle(item.title);
     const card = document.createElement('div');
@@ -1834,10 +1899,11 @@ function renderTop10(ranking) {
     card.appendChild(meta);
     grid.appendChild(card);
   });
-  top10Container.appendChild(grid);
+  top50Container.appendChild(grid);
+  refreshControllerNavigation();
 }
 
-function showResults() {
+function renderResults() {
   const ranking = computeRanking();
   const t = getT();
   fillTable(
@@ -1848,15 +1914,45 @@ function showResults() {
       return [r.rank, display, r.rating.toFixed(0), r.games, r.wins];
     })
   );
-  renderTop10(ranking);
+  renderTop50(ranking);
   const rankingCard = document.getElementById('rankingCard');
   if (rankingCard && rankingCard.tagName === 'DETAILS') rankingCard.open = false;
-  resultsSection?.classList.remove('hidden');
+}
+
+function updateResultsToggleLabel() {
+  if (!showResultsBtn) return;
+  const t = getT();
+  showResultsBtn.textContent = resultsExpanded ? (t.hideResults || t.hide || t.showResults) : (t.showResults || 'Show Results');
+}
+
+function setResultsVisibility(expanded) {
+  const allow = (movies?.length || 0) > 0;
+  resultsExpanded = !!expanded && allow;
+  if (!resultsSection) return;
+  if (resultsExpanded) {
+    renderResults();
+    resultsSection.classList.remove('hidden');
+  } else {
+    resultsSection.classList.add('hidden');
+    if (resultsSection.contains(document.activeElement)) {
+      showResultsBtn?.focus();
+    }
+  }
+  resultsSection?.setAttribute('aria-hidden', resultsExpanded ? 'false' : 'true');
+  updateResultsToggleLabel();
+  refreshControllerNavigation();
+}
+
+function toggleResults() {
+  setResultsVisibility(!resultsExpanded);
 }
 
 function updateVoteVisibility(preservePair = false, skipPickPair = false) {
   const canShow = rankerConfirmed && (movies?.length || 0) >= 2;
   voteSection?.classList.toggle('hidden', !canShow);
+  if (!canShow) {
+    setResultsVisibility(false);
+  }
   if (!canShow) return;
   if (skipPickPair) {
     if (currentPair && currentPair.length === 2) {
@@ -2177,6 +2273,44 @@ function updateSelectedMoviesSummary() {
   const t = getT();
   if (selectedMoviesSummaryManual) selectedMoviesSummaryManual.textContent = `${t.manualList || 'Manual List'} (${manualCount})`;
   if (selectedMoviesSummaryAuto) selectedMoviesSummaryAuto.textContent = `${t.autoList || 'Auto List'} (${autoCount})`;
+}
+
+function updateRankedMoviesSummary() {
+  if (!rankedMoviesSummary) return;
+  const t = getT();
+  const label = t.loadedList || 'Loaded items';
+  rankedMoviesSummary.textContent = `${label} (${movies.length})`;
+  if (rankedMoviesWrap) {
+    rankedMoviesWrap.classList.toggle('hidden', movies.length === 0);
+    if (movies.length === 0) rankedMoviesWrap.open = false;
+    rankedMoviesWrap.setAttribute('aria-hidden', movies.length === 0 ? 'true' : 'false');
+  }
+}
+
+function renderRankedMoviesList() {
+  if (!rankedMoviesList) return;
+  rankedMoviesList.innerHTML = '';
+  movies.forEach((m) => {
+    const tag = document.createElement('div');
+    tag.className = 'tag';
+    tag.textContent = formatTitleWithYear(m) || m.title;
+    const close = document.createElement('span');
+    close.className = 'tag-close';
+    close.textContent = 'x';
+    close.addEventListener('click', () => removeRankedMovie(m));
+    close.tabIndex = 0;
+    close.setAttribute('role', 'button');
+    close.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        removeRankedMovie(m);
+      }
+    });
+    tag.appendChild(close);
+    rankedMoviesList.appendChild(tag);
+  });
+  updateRankedMoviesSummary();
+  refreshControllerNavigation();
 }
 
 function enqueueMatchModal(title) {
@@ -2702,6 +2836,52 @@ async function loadSwipeFilteredList() {
   }
 }
 
+async function addShowsToSwipe() {
+  const t = getT();
+  const statusHandler = (msg) => {
+    setStatus(msg);
+    if (swipeFilteredStatus) swipeFilteredStatus.textContent = msg;
+  };
+  try {
+    if (swAddShowsBtn) swAddShowsBtn.disabled = true;
+    statusHandler(t.statusFetching || '');
+    const params = new URLSearchParams();
+    params.set('lang', titleLanguage || 'en');
+    const resp = await fetch(`${API_BASE}/shows?${params.toString()}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    const items = data.items || [];
+    const existing = new Set(swipeSelectedMovies.map(m => m.title));
+    const availableSlots = isFinite(swMaxMovies) ? Math.max(0, swMaxMovies - swipeSelectedMovies.length) : Infinity;
+    let additions = items
+      .filter(it => it && it.title && !existing.has(it.title))
+      .map(it => ({
+        title: it.title,
+        display: formatTitleWithYear(it),
+        image: it.image || '',
+        imageAbsolute: it.image && /^https?:/.test(it.image) ? it.image : '',
+        addedBy: swipeCurrentPerson,
+        source: 'auto',
+        jellyfinId: it.jellyfinId
+      }));
+    if (isFinite(availableSlots)) additions = additions.slice(0, availableSlots);
+    if (additions.length) {
+      swipeSelectedMovies = swipeSelectedMovies.concat(additions);
+      resetSwipeProgressAll();
+      renderSwipeSelectedMovies();
+      updateSwipeCard();
+      updateSwipeDeckVisibility();
+      persistSwipeState();
+    }
+    const okTpl = t.statusFetchOk || t.statusLoaded || '';
+    if (okTpl) statusHandler(okTpl.replace('{count}', additions.length || items.length || 0));
+  } catch (err) {
+    statusHandler((t.statusFetchError || '') + err.message);
+  } finally {
+    if (swAddShowsBtn) swAddShowsBtn.disabled = false;
+  }
+}
+
 function renderPersonButtons() {
   if (!personButtons) return;
   personButtons.innerHTML = '';
@@ -2764,6 +2944,7 @@ function updateMovieCountLabel() {
     const label = '<span id="movieCountLabel">' + movies.length + '</span> ' + movieLabel;
     info.innerHTML = label;
   }
+  updateRankedMoviesSummary();
 }
 
 function getNumber(el, fallback) {
@@ -2906,15 +3087,15 @@ async function onApplyPersons() {
   }
 }
 
-async function downloadTop10Image() {
-  const ranking = computeRanking().slice(0, 10);
+async function downloadTop50Image() {
+  const ranking = computeRanking().slice(0, 50);
   if (!ranking.length) return;
   const cols = 5;
-  const rows = 2;
-  const posterW = 240;
-  const posterH = 360;
-  const padding = 20;
-  const textH = 40;
+  const rows = 10;
+  const posterW = 180;
+  const posterH = 270;
+  const padding = 16;
+  const textH = 32;
   const canvas = document.createElement('canvas');
   canvas.width = cols * (posterW + padding) + padding;
   canvas.height = rows * (posterH + textH + padding) + padding;
@@ -2943,14 +3124,14 @@ async function downloadTop10Image() {
     const y = padding + row * (posterH + textH + padding);
     const img = await loadImage(resolveMovieImage(movie));
     if (img) ctx.drawImage(img, x, y, posterW, posterH);
-    ctx.fillText(`${i + 1}. ${display}`, x + posterW / 2, y + posterH + 24);
+    ctx.fillText(`${i + 1}. ${display}`, x + posterW / 2, y + posterH + 22);
   }
   canvas.toBlob((blob) => {
     if (!blob) return;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'top10.jpg';
+    a.download = 'top50.jpg';
     a.click();
     URL.revokeObjectURL(url);
   }, 'image/jpeg', 0.92);

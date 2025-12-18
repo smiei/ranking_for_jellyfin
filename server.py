@@ -310,34 +310,66 @@ def sanitize_filename(name: str) -> str:
     return name[:150] if name else "unbenannt"
 
 
-def tmdb_title_by_id(session: requests.Session, tmdb_id: str, lang: str) -> Optional[str]:
+def tmdb_title_by_id(
+    session: requests.Session,
+    tmdb_id: str,
+    lang: str,
+    media_type: str = "movie",
+) -> Optional[str]:
     """Lookup TMDB title by ID with language fallback."""
     try:
-        resp = session.get(f"{TMDB_API_URL}/movie/{tmdb_id}", params={"language": lang}, timeout=8)
+        endpoint = f"{TMDB_API_URL}/{media_type}/{tmdb_id}"
+        resp = session.get(endpoint, params={"language": lang}, timeout=8)
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("title") or data.get("original_title") or data.get("name")
+            title_keys = [
+                "title",
+                "original_title",
+                "name",
+                "original_name",
+            ]
+            for key in title_keys:
+                if data.get(key):
+                    return data.get(key)
     except Exception:
         return None
     return None
 
 
-def tmdb_title_by_search(session: requests.Session, title: str, year: Optional[int], lang: str) -> Optional[str]:
-    """Search TMDB for a movie title, preferring matching year when available."""
+def tmdb_title_by_search(
+    session: requests.Session,
+    title: str,
+    year: Optional[int],
+    lang: str,
+    media_type: str = "movie",
+) -> Optional[str]:
+    """Search TMDB for a title, preferring matching year when available."""
     params = {"query": title, "language": lang, "include_adult": False}
     if year:
-        params["year"] = year
+        if media_type == "tv":
+            params["first_air_date_year"] = year
+        else:
+            params["year"] = year
     try:
-        resp = session.get(f"{TMDB_API_URL}/search/movie", params=params, timeout=8)
+        resp = session.get(f"{TMDB_API_URL}/search/{media_type}", params=params, timeout=8)
         if resp.status_code != 200:
             return None
         results = resp.json().get("results") or []
         candidate = None
         if year:
-            candidate = next((r for r in results if str(year) == (r.get("release_date") or "")[:4]), None)
+            date_key = "first_air_date" if media_type == "tv" else "release_date"
+            candidate = next((r for r in results if str(year) == (r.get(date_key) or "")[:4]), None)
         candidate = candidate or (results[0] if results else None)
         if candidate:
-            return candidate.get("title") or candidate.get("original_title") or candidate.get("name")
+            title_keys = [
+                "title",
+                "original_title",
+                "name",
+                "original_name",
+            ]
+            for key in title_keys:
+                if candidate.get(key):
+                    return candidate.get(key)
     except Exception:
         return None
     return None
@@ -349,16 +381,22 @@ def resolve_tmdb_title(session: requests.Session, item: Dict[str, Any], lang: st
         return None
     raw_title = item.get("Name") or ""
     year = item.get("ProductionYear")
+    item_type = (item.get("Type") or "").lower()
+    media_type = "tv" if item_type in {"series", "season", "episode", "boxset"} else "movie"
     provider_ids = item.get("ProviderIds") or {}
     tmdb_id = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
-    cache_key = (lang, f"id:{tmdb_id}" if tmdb_id else f"title:{raw_title.lower().strip()}|{year or ''}")
+    cache_key = (
+        lang,
+        media_type,
+        f"id:{tmdb_id}" if tmdb_id else f"title:{raw_title.lower().strip()}|{year or ''}",
+    )
     if cache_key in TMDB_TITLE_CACHE:
         return TMDB_TITLE_CACHE[cache_key]
     title = None
     if tmdb_id:
-        title = tmdb_title_by_id(session, tmdb_id, lang)
+        title = tmdb_title_by_id(session, tmdb_id, lang, media_type)
     if not title and raw_title:
-        title = tmdb_title_by_search(session, raw_title, year, lang)
+        title = tmdb_title_by_search(session, raw_title, year, lang, media_type)
     TMDB_TITLE_CACHE[cache_key] = title
     return title
 
@@ -558,10 +596,9 @@ def fetch_shows(limit: int = 10000) -> List[Dict[str, Any]]:
         "SortBy": "SortName",
         "SortOrder": "Ascending",
         "Limit": limit,
-        "Fields": "ProviderIds,ProductionYear,ImageTags,Type,CollectionType",
-        "UserId": USER_ID,
+        "Fields": "ProviderIds,ProductionYear,ImageTags,Type,CollectionType,SeriesName,SeriesId",
     }
-    url = f"{JELLYFIN_URL}/Items"
+    url = f"{JELLYFIN_URL}/Users/{USER_ID}/Items"
     resp = session.get(url, params=params)
     resp.raise_for_status()
     raw_items = resp.json().get("Items", [])
@@ -980,15 +1017,15 @@ def add_shows():
         session.headers.update({"X-Emby-Token": API_KEY})
         added = 0
         for item in movies_raw:
-            raw_title = item.get("Name", "Unbenannt")
-            file_title = sanitize_filename(raw_title)
-            jellyfin_id = item.get("Id")
             item_type = (item.get("Type") or "").lower()
             collection_type = (item.get("CollectionType") or "").lower()
             if item_type == "movie" or collection_type == "movies":
                 continue
-            if item_type and item_type not in {"series", "season", "episode", "boxset"} and collection_type != "tvshows":
+            if item_type and item_type not in {"series", "boxset"} and collection_type != "tvshows":
                 continue
+            series_name = item.get("SeriesName") or item.get("Name") or "Unbenannt"
+            file_title = sanitize_filename(series_name)
+            jellyfin_id = item.get("SeriesId") or item.get("Id")
             if jellyfin_id and jellyfin_id in existing_ids:
                 continue
             if not file_title or file_title in existing_titles:
@@ -1022,6 +1059,61 @@ def add_shows():
         return jsonify({"ok": True, "added": added, "total": len(existing_movies), "state": state})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/remove-movie")
+def remove_movie():
+    data = request.get_json(silent=True) or {}
+    title = data.get("title")
+    jellyfin_id = data.get("jellyfinId") or data.get("id")
+    state = normalize_ranking_state(load_state())
+    if not state:
+        return jsonify({"ok": False, "error": "no state"}), 404
+
+    movies_list = state.get("movies") or []
+    if not movies_list:
+        return jsonify({"ok": False, "error": "no movies"}), 400
+
+    remaining: List[Dict[str, Any]] = []
+    removed: List[Dict[str, Any]] = []
+
+    def matches(entry: Dict[str, Any]) -> bool:
+        if jellyfin_id and entry.get("jellyfinId") == jellyfin_id:
+            return True
+        return bool(title) and entry.get("title") == title
+
+    for entry in movies_list:
+        if matches(entry):
+            removed.append(entry)
+        else:
+            remaining.append(entry)
+
+    if not removed:
+        return jsonify({"ok": False, "error": "not found"}), 404
+
+    state["movies"] = remaining
+    ratings = state.get("ratings") or {}
+    for entry in removed:
+        ratings.pop(entry.get("title"), None)
+    state["ratings"] = ratings
+
+    pair_counts = state.get("pairCounts") or {}
+    for person, pairs in pair_counts.items():
+        if not isinstance(pairs, dict):
+            continue
+        to_delete = []
+        for key in list(pairs.keys()):
+            titles_in_key = set(key.split(PAIR_SEPARATOR))
+            if any((r.get("title") or "") in titles_in_key for r in removed):
+                to_delete.append(key)
+        for key in to_delete:
+            pairs.pop(key, None)
+    state["pairCounts"] = pair_counts
+
+    state["rankerConfirmed"] = False
+    compute_pair_coverage(state)
+    save_state(state)
+    return jsonify({"ok": True, "state": state, "removed": len(removed)})
 
 
 @app.post("/load-csv")
@@ -1088,6 +1180,54 @@ def list_movies():
                 image_url = f"{JELLYFIN_URL}/Items/{item['Id']}/Images/Primary?format=jpg&X-Emby-Token={API_KEY}"
             year = item.get("ProductionYear")
             results.append({"title": display_title, "display": display_title, "image": image_url, "year": year})
+        return jsonify({"ok": True, "items": results, "lang": lang, "translated": translate_titles})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.get("/shows")
+def list_shows():
+    try:
+        lang = (request.args.get("lang") or "en").lower()
+        tmdb_key = request.args.get("tmdbKey") or TMDB_API_KEY
+        translate_titles = bool(tmdb_key) and lang != "en"
+        tmdb_session = None
+        if translate_titles:
+            tmdb_session = requests.Session()
+            tmdb_session.params = {"api_key": tmdb_key}
+
+        items = fetch_shows(limit=5000)
+        results = []
+        seen_ids: Set[str] = set()
+        for item in items:
+            series_id = item.get("SeriesId") or item.get("Id")
+            if series_id:
+                if series_id in seen_ids:
+                    continue
+                seen_ids.add(series_id)
+            raw_title = item.get("SeriesName") or item.get("Name") or "Unbenannt"
+            title = sanitize_filename(raw_title)
+            display_title = title
+            if translate_titles and tmdb_session:
+                translated = resolve_tmdb_title(tmdb_session, item, lang)
+                if translated:
+                    display_title = translated
+            image_tags = item.get("ImageTags", {})
+            tag = image_tags.get("Primary")
+            if tag and series_id:
+                image_url = f"{JELLYFIN_URL}/Items/{series_id}/Images/Primary?tag={tag}&format=jpg&X-Emby-Token={API_KEY}"
+            elif series_id:
+                image_url = f"{JELLYFIN_URL}/Items/{series_id}/Images/Primary?format=jpg&X-Emby-Token={API_KEY}"
+            else:
+                image_url = ""
+            year = item.get("ProductionYear")
+            results.append({
+                "title": title,
+                "display": display_title,
+                "image": image_url,
+                "year": year,
+                "jellyfinId": series_id,
+            })
         return jsonify({"ok": True, "items": results, "lang": lang, "translated": translate_titles})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

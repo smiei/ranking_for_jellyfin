@@ -142,6 +142,11 @@
           </div>
 
           <p id="status" class="status-text center"></p>
+
+          <details class="card nested" id="rankedMoviesWrap">
+            <summary id="rankedMoviesSummary">Geladene Liste</summary>
+            <div id="rankedMoviesList" class="tag-list"></div>
+          </details>
         </section>
 
         <details class="card collapsible" id="saveSection">
@@ -194,11 +199,11 @@
           <div class="page-subtitle">
             <h2>Ergebnisse</h2>
           </div>
-          <div id="top10Card" class="card nested">
-            <h3>Top 10</h3>
-            <div id="top10Container"></div>
+          <div id="top50Card" class="card nested">
+            <h3>Top 50</h3>
+            <div id="top50Container"></div>
             <div class="actions">
-              <button id="downloadTop10Btn" class="btn primary">Top 10 Download</button>
+              <button id="downloadTop50Btn" class="btn primary">Top 50 Download</button>
             </div>
           </div>
           <details id="rankingCard" class="card nested collapsible">
@@ -331,6 +336,7 @@
               <div class="row filters-actions swipe-actions-row">
                 <div class="left-actions">
                   <button id="swLoadFilteredBtn" class="btn primary" type="button">Gefilterte Liste laden</button>
+                  <button id="swAddShowsBtn" class="btn secondary" type="button">Add Shows</button>
                   <button id="swResetFiltersBtn" class="btn secondary" type="button">Reset</button>
                 </div>
               </div>

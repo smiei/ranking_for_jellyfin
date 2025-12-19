@@ -15,8 +15,9 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
 ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
 CONFIG_DIR = ROOT / "config"
-ENV_PATH = ROOT / ".env"
+ENV_PATHS = [ROOT / ".env", PROJECT_ROOT / ".env"]
 
 
 def load_env_file(path: Path) -> Dict[str, str]:
@@ -71,7 +72,9 @@ def log_event(category: str, message: str, extra: Optional[Dict[str, Any]] = Non
         pass
 
 
-env_file = load_env_file(ENV_PATH)
+env_file: Dict[str, str] = {}
+for path in ENV_PATHS:
+    env_file.update(load_env_file(path))
 server_cfg = load_json(CONFIG_DIR / "server.json", {}) or {}
 env = {**env_file, **os.environ}
 

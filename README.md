@@ -10,16 +10,14 @@ Small web app to pull your Jellyfin movie library, rank titles head-to-head (Tru
 - **Logs:** JSON lines per category under `logs/`.
 
 ## Project layout (top-level)
-- `server.py` — Flask API (Jellyfin fetch, TMDB translation, state, swipe/rank endpoints, image serving).
-- `index.html`, `style.css`, `script.js`, `i18n.json` — frontend UI/logic/translations.
-- `config/` — `server.json` (backend defaults), `client.json` (frontend defaults).
-- `tray_launcher.py` — Windows tray helper to start backend and static server.
-- `start_servers.ps1` / `.bat` — startup scripts.
-- `logs/` — runtime logs (created on first run).
-- Data/state: `movies.csv`, `images/`, `state.json`, `swipe_state.json`.
+- `backend/` — Flask API (`server.py`), backend config (`config/server.json`), env template (`.env.example`), Python deps (`requirements.txt`).
+- `frontend/` — static UI (`index.html`, `style.css`, `script.js`, `i18n.json`, `config/client.json`).
+- `scripts/` — helper launchers (`start_servers.ps1`, `start_servers.bat`, `start_tray_launcher.vbs`).
+- `tools/` — tray launcher (`tray_launcher.py`), PyInstaller helper, and utilities.
+- Runtime data (created on first run, ignored by git): `backend/images/`, `backend/logs/`, `backend/saves/`, `backend/movies.csv`, `backend/state.json`, `backend/swipe_state.json`.
 
 ## Requirements
-- Python 3.10+ with `pip` (see `requirements.txt`).
+- Python 3.10+ with `pip` (see `backend/requirements.txt`).
 - Jellyfin server with API key and user ID.
 - Optional: TMDB API key for translated titles.
 - Optional (Windows): `pystray`, `Pillow` for tray launcher (already in requirements).
@@ -27,36 +25,36 @@ Small web app to pull your Jellyfin movie library, rank titles head-to-head (Tru
 ## Setup
 1. Install deps:
    ```bash
-   pip install -r requirements.txt
+   pip install -r backend/requirements.txt
    ```
 2. Env/secrets:
-   - Copy `.env.example` to `.env`.
+   - Copy `backend/.env.example` to `backend/.env`.
    - Set at least: `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID`, `SERVER_PORT` (default 5000).
    - Optional: `TMDB_API_KEY`.
 3. Defaults:
-   - `config/server.json`: poster/state paths, base rating, default R, host/port, allowed CORS, `logDir` (defaults to `logs/`).
-   - `config/client.json`: frontend API base/port, default tab, filter presets, slider ranges, swipe poll interval.
+   - `backend/config/server.json`: poster/state paths, base rating, default R, host/port, allowed CORS, `logDir` (defaults to `backend/logs/`).
+   - `frontend/config/client.json`: frontend API base/port, default tab, filter presets, slider ranges, swipe poll interval.
 
 ### Precedence
-- Backend: real env / `.env` > `config/server.json` > built-ins.
-- Frontend: `config/client.json` > built-ins in `script.js`.
+- Backend: real env / `backend/.env` > `backend/config/server.json` > built-ins.
+- Frontend: `frontend/config/client.json` > built-ins in `script.js`.
 
 ## Running
 - PowerShell helper (backend + static server + open browser):
   ```powershell
-  ./start_servers.ps1
+  ./scripts/start_servers.ps1
   ```
   - Flask on `http://localhost:5000`, static server on `http://localhost:8000`, opens `http://localhost:8000/index.html`.
 - Manual:
   ```bash
-  python server.py              # API
-  python -m http.server 8000    # serve index.html
+  python backend/server.py                           # API (cwd can be repo root)
+  python -m http.server 8000 --directory frontend    # serve index.html
   ```
 - Tray (Windows):
   ```bash
-  python tray_launcher.py
+  python tools/tray_launcher.py
   ```
-  - Or build with PyInstaller if desired (see `JellyfinMoviesTray.spec` / `build_tray_exe.py`).
+  - Or build with PyInstaller if desired (see `tools/build_tray_exe.py`).
 
 ## Frontend basics
 - Open `http://localhost:8000/index.html`.
@@ -80,24 +78,24 @@ Small web app to pull your Jellyfin movie library, rank titles head-to-head (Tru
 - Assets: `GET /images/<file>`
 
 ## Logging
-- Location: `logs/` (change via `logDir` in `config/server.json`).
+- Location: `backend/logs/` (change via `logDir` in `backend/config/server.json`).
 - Files are per category (e.g. `frontend.log`, `dom.log`, `api.log`, `errors.log`, `debug.log`, `tray_servers.log`).
 - Frontend errors/unhandled rejections are sent to `/client-log` (category `errors`).
-- Tray writes to `logs/tray_servers.log`.
+- Tray writes to `backend/logs/tray_servers.log`.
 
 ## Data & persistence
-- Posters: `images/`
-- State: `state.json` (ranker), `swipe_state.json` (swipe)
-- CSV: `movies.csv` (last fetched list)
-- Logs: `logs/`
+- Posters: `backend/images/`
+- State: `backend/state.json` (ranker), `backend/swipe_state.json` (swipe)
+- CSV: `backend/movies.csv` (last fetched list)
+- Logs: `backend/logs/`
 
 ## Tips
-- Port change: update `SERVER_PORT` in `.env` and `api.port/api.base` in `config/client.json`.
-- CORS: set `allowedOrigins` in `config/server.json`.
+- Port change: update `SERVER_PORT` in `backend/.env` and `api.port/api.base` in `frontend/config/client.json`.
+- CORS: set `allowedOrigins` in `backend/config/server.json`.
 - Light/dark toggle and filters persist in local storage/state.
 
 ## Release / publishing
-- Ensure `.env.example`, `config/server.json`, `config/client.json` reflect your intended defaults.
-- Keep secrets in `.env` (ignored by git).
-- `logs/` is ignored by git; clear local logs/state/images before packaging if needed.
-- Optional: build tray exe via `build_tray_exe.py` / `JellyfinMoviesTray.spec`.
+- Ensure `.env.example`, `backend/config/server.json`, `frontend/config/client.json` reflect your intended defaults.
+- Keep secrets in `backend/.env` (ignored by git).
+- `backend/logs/` is ignored by git; clear local logs/state/images before packaging if needed.
+- Optional: build tray exe via `tools/build_tray_exe.py`.

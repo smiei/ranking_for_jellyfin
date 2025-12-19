@@ -23,9 +23,11 @@ from PIL import Image, ImageDraw
 from pystray import Menu, MenuItem
 
 def _find_project_root() -> Path:
-    """Locate the folder that contains server.py and the frontend (index.html)."""
+    """Locate the folder that contains backend/server.py and frontend/index.html."""
     def looks_like_root(path: Path) -> bool:
-        return (path / "server.py").is_file() and (path / "index.html").is_file()
+        backend = path / "backend" / "server.py"
+        frontend = path / "frontend" / "index.html"
+        return backend.is_file() and frontend.is_file()
 
     candidates = []
     if getattr(sys, "frozen", False):
@@ -53,7 +55,9 @@ def _find_project_root() -> Path:
 
 
 ROOT = _find_project_root()
-LOG_FILE = ROOT / "logs" / "tray_servers.log"
+BACKEND_DIR = ROOT / "backend"
+FRONTEND_DIR = ROOT / "frontend"
+LOG_FILE = BACKEND_DIR / "logs" / "tray_servers.log"
 
 def _python_cmd() -> List[str]:
     env_override = os.environ.get("TRAY_PYTHON")
@@ -88,9 +92,10 @@ def _python_cmd() -> List[str]:
 
 
 PYTHON_CMD = _python_cmd()
-SERVER_COMMANDS: List[List[str]] = [
-    PYTHON_CMD + ["server.py"],
-    PYTHON_CMD + ["-m", "http.server", "8000"],
+ServerCommand = tuple[List[str], Path]
+SERVER_COMMANDS: List[ServerCommand] = [
+    (PYTHON_CMD + [str(BACKEND_DIR / "server.py")], BACKEND_DIR),
+    (PYTHON_CMD + ["-m", "http.server", "8000"], FRONTEND_DIR),
 ]
 
 _procs: List[subprocess.Popen] = []
@@ -129,7 +134,7 @@ def start_servers(icon: pystray.Icon | None = None, _item=None) -> None:
             _notify(icon, "Servers are already running.")
             return
         _procs.clear()
-        for cmd in SERVER_COMMANDS:
+        for cmd, cwd in SERVER_COMMANDS:
             try:
                 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
                 log_handle = open(LOG_FILE, "ab")
@@ -137,11 +142,11 @@ def start_servers(icon: pystray.Icon | None = None, _item=None) -> None:
             except Exception:
                 log_handle = subprocess.DEVNULL
             try:
-                log_handle.write(f"Starting: {' '.join(cmd)}\n".encode("utf-8", "ignore"))
+                log_handle.write(f"Starting: {' '.join(cmd)} (cwd={cwd})\n".encode("utf-8", "ignore"))
                 log_handle.flush()
                 p = subprocess.Popen(
                     cmd,
-                    cwd=ROOT,
+                    cwd=cwd,
                     stdout=log_handle,
                     stderr=log_handle,
                     creationflags=_creationflags(),

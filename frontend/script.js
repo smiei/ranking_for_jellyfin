@@ -1100,6 +1100,8 @@ const leftTitleEl = document.getElementById('leftTitle');
 const rightTitleEl = document.getElementById('rightTitle');
 const leftRuntimeEl = document.getElementById('leftRuntime');
 const rightRuntimeEl = document.getElementById('rightRuntime');
+const leftRatingEl = document.getElementById('leftRating');
+const rightRatingEl = document.getElementById('rightRating');
 const swipeProgressEl = document.getElementById('swipeProgress');
 const swipeProgressLabel = document.getElementById('swipeProgressLabel');
 const swipeProgressBar = document.getElementById('swipeProgressBar');
@@ -1857,6 +1859,8 @@ function renderPair() {
   rightTitleEl.textContent = rightLabel;
   const leftRuntime = formatRuntime(left.runtimeMinutes);
   const rightRuntime = formatRuntime(right.runtimeMinutes);
+  const leftRating = formatRating(left.rating);
+  const rightRating = formatRating(right.rating);
   if (leftRuntimeEl) {
     leftRuntimeEl.textContent = leftRuntime;
     leftRuntimeEl.classList.toggle('hidden', !leftRuntime);
@@ -1864,6 +1868,15 @@ function renderPair() {
   if (rightRuntimeEl) {
     rightRuntimeEl.textContent = rightRuntime;
     rightRuntimeEl.classList.toggle('hidden', !rightRuntime);
+  }
+  const ratingLabel = (getT().ratingLabel || 'Rating').toLowerCase();
+  if (leftRatingEl) {
+    leftRatingEl.textContent = leftRating ? `${leftRating} ${ratingLabel}` : '';
+    leftRatingEl.classList.toggle('hidden', !leftRating);
+  }
+  if (rightRatingEl) {
+    rightRatingEl.textContent = rightRating ? `${rightRating} ${ratingLabel}` : '';
+    rightRatingEl.classList.toggle('hidden', !rightRating);
   }
   leftImage.src = resolveMovieImage(left);
   leftImage.alt = leftLabel;
@@ -1920,7 +1933,8 @@ function normalizeMovieImage(movie) {
   }
   const imageAbsolute = resolveMovieImage({ image: filename });
   const runtimeMinutes = movie?.runtimeMinutes !== undefined ? parseInt(movie.runtimeMinutes, 10) : undefined;
-  return { ...movie, image: filename, imageAbsolute, source: movie?.source || 'manual', runtimeMinutes };
+  const rating = movie?.rating !== undefined ? parseFloat(movie.rating) : undefined;
+  return { ...movie, image: filename, imageAbsolute, source: movie?.source || 'manual', runtimeMinutes, rating };
 }
 
 function formatRuntime(minutes) {
@@ -1931,6 +1945,13 @@ function formatRuntime(minutes) {
   if (hours && mins) return `${hours}h ${mins}m`;
   if (hours) return `${hours}h`;
   return `${mins}m`;
+}
+
+function formatRating(val) {
+  if (val === undefined || val === null) return '';
+  const num = parseFloat(val);
+  if (isNaN(num)) return '';
+  return num.toFixed(1);
 }
 
 function fillTable(tableEl, headers, rows) {

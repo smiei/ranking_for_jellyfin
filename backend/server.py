@@ -508,7 +508,7 @@ def load_movies_from_csv() -> Dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"{path.name} not found")
 
-    entries: List[Tuple[str, Optional[int]]] = []
+    entries: List[Tuple[str, Optional[int], Optional[float]]] = []
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         for idx, row in enumerate(reader):
@@ -518,13 +518,19 @@ def load_movies_from_csv() -> Dict[str, Any]:
             if idx == 0 and title.lower() == "title":
                 continue
             runtime_val: Optional[int] = None
+            rating_val: Optional[float] = None
             if len(row) > 1 and row[1]:
                 try:
                     runtime_val = int(float(row[1]))
                 except Exception:
                     runtime_val = None
+            if len(row) > 2 and row[2]:
+                try:
+                    rating_val = round(float(row[2]), 1)
+                except Exception:
+                    rating_val = None
             if title:
-                entries.append((title, runtime_val))
+                entries.append((title, runtime_val, rating_val))
 
     if not entries:
         raise ValueError("CSV enthaelt keine Titel")
@@ -532,13 +538,20 @@ def load_movies_from_csv() -> Dict[str, Any]:
     image_lookup = build_image_lookup()
     seen: Set[str] = set()
     movies: List[Dict[str, Any]] = []
-    for title, runtime in entries:
+    for title, runtime, rating in entries:
         key = title.lower()
         if key in seen:
             continue
         seen.add(key)
         image = match_image_for_title(title, image_lookup) or ""
-        movies.append({"title": title, "display": title, "image": image, "runtimeMinutes": runtime, "source": "csv"})
+        movies.append({
+            "title": title,
+            "display": title,
+            "image": image,
+            "runtimeMinutes": runtime,
+            "rating": rating,
+            "source": "csv",
+        })
 
     ratings = base_ratings_from_movies(movies)
     existing_state = load_state() or {}
@@ -659,7 +672,7 @@ def fetch_shows(limit: int = 10000) -> List[Dict[str, Any]]:
         "SortBy": "SortName",
         "SortOrder": "Ascending",
         "Limit": limit,
-        "Fields": "ProviderIds,ProductionYear,ImageTags,Type,CollectionType,SeriesName,SeriesId",
+        "Fields": "ProviderIds,ProductionYear,ImageTags,Type,CollectionType,SeriesName,SeriesId,CommunityRating",
     }
     url = f"{JELLYFIN_URL}/Users/{USER_ID}/Items"
     resp = session.get(url, params=params)
@@ -1020,7 +1033,7 @@ def generate():
         csv_path = resolve_output_csv_path(for_write=True)
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["title", "runtimeMinutes"])
+            w.writerow(["title", "runtimeMinutes", "rating"])
             for item in movies_raw:
                 raw_title = item.get("Name", "Unbenannt")
                 file_title = sanitize_filename(raw_title)
@@ -1030,7 +1043,12 @@ def generate():
                     if translated:
                         display_title = sanitize_filename(translated)
                 runtime_minutes = ticks_to_minutes(item.get("RunTimeTicks"))
-                w.writerow([display_title, runtime_minutes if runtime_minutes is not None else ""])
+                community_rating = item.get("CommunityRating")
+                w.writerow([
+                    display_title,
+                    runtime_minutes if runtime_minutes is not None else "",
+                    community_rating if community_rating is not None else "",
+                ])
 
         # Poster laden
         session = requests.Session()
@@ -1049,12 +1067,14 @@ def generate():
                     display_title = sanitize_filename(translated)
             year = item.get("ProductionYear")
             runtime_minutes = ticks_to_minutes(item.get("RunTimeTicks"))
+            community_rating = item.get("CommunityRating")
             movie_list.append({
                 "title": display_title,
                 "display": display_title,
                 "image": file_title + ".jpg",
                 "year": year,
                 "runtimeMinutes": runtime_minutes,
+                "rating": community_rating,
             })
 
         ratings = base_ratings_from_movies(movie_list)
@@ -1147,6 +1167,7 @@ def add_shows():
                 "display": display_title,
                 "image": f"{file_title}.jpg",
                 "year": year,
+                "rating": item.get("CommunityRating"),
                 "jellyfinId": jellyfin_id,
                 "source": "jellyfin",
             }

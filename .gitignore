@@ -16,6 +16,7 @@ dist/
 build/
 logs/
 saves/
+old_saves/
 
 # Local scratch files
 script_fix.tmp

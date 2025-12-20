@@ -334,6 +334,7 @@ function applyUILanguage() {
   setText('#runtimeLabel', t.runtimeLabel);
   setText('#criticLabel', t.criticLabel);
   setText('#releaseLabel', t.releaseLabel);
+  setText(rankMaxMoviesLabel, t.maxLabel || 'Max (0 is all)');
   setText('label[for="filter4kMain"]', t.filter4k);
   setText(fetchMoviesBtn, t.fetchBtn);
   setText(loadMoviesBtn, t.csvBtn);
@@ -348,6 +349,7 @@ function applyUILanguage() {
   setText(downloadRankingCsvBtn, t.downloadRankingCsv || 'CSV Download');
   setText('#rankingCard summary', t.rankingTitle);
   setText('#rankedMoviesSummary', t.loadedList || 'Loaded items');
+  setText(rankClearListBtn, t.clearList);
   setText('#swiperSection .page-subtitle h2', t.swiperTitle);
   setText('#swipeSetupTitle', t.swipeHeading);
   if (swipeStatus) swipeStatus.textContent = '';
@@ -361,6 +363,7 @@ function applyUILanguage() {
   setText(swLoadFilteredBtn, t.loadFiltered || t.fetchBtn);
   setText(swResetFiltersBtn, t.resetFilters);
   setText(swAddShowsBtn, t.addShowsBtn || 'Add Shows');
+  setText(swLoadCsvBtn, t.csvBtn || 'Load CSV');
   setText(swClearListBtn, t.clearList);
   setText(confirmSetupBtn, t.confirm);
   setText(confirmSwipeBtn, t.confirm);
@@ -374,6 +377,7 @@ function applyUILanguage() {
   setText(swRuntimeLabel, t.runtimeLabel);
   setText(swCriticLabel, t.criticLabel);
   setText(swYearLabel, t.releaseLabel);
+  setText(swMaxMoviesLabel, t.maxLabel || 'Max (0 is all)');
   setText('label[for="swFilter4kInline"]', t.filter4k);
   updateSwFilterMenuLabels(t);
   const matchLabel = document.querySelector('#matchList')?.previousElementSibling;
@@ -402,6 +406,13 @@ function applyUILanguage() {
   swipeYesBtn?.setAttribute('aria-label', t.yes);
   swipeNoBtn?.setAttribute('aria-label', t.no);
   swipeCard?.setAttribute('aria-label', t.swipeHeading);
+  const maxTooltip = t.maxHint || 'Movies are picked randomly when a max is set.';
+  [rankMaxMoviesInfo, swMaxMoviesInfo].forEach((el) => {
+    if (!el) return;
+    el.setAttribute('data-tooltip', maxTooltip);
+    el.setAttribute('title', maxTooltip);
+    el.setAttribute('aria-label', maxTooltip);
+  });
   updateFilterLabel();
   updateSwFilterLabel();
   updateRuntimeLabel();
@@ -1011,7 +1022,11 @@ const swYearMax = document.getElementById('swYearMax');
 const swYearMinNum = document.getElementById('swYearMinNum');
 const swYearMaxNum = document.getElementById('swYearMaxNum');
 const swMaxMoviesInput = document.getElementById('swMaxMovies');
+const swMaxMoviesLabel = document.getElementById('swMaxMoviesLabel');
+const swMaxMoviesInfo = document.getElementById('swMaxMoviesInfo');
 const rankMaxMoviesInput = document.getElementById('rankMaxMovies');
+const rankMaxMoviesLabel = document.getElementById('rankMaxMoviesLabel');
+const rankMaxMoviesInfo = document.getElementById('rankMaxMoviesInfo');
 const swLoadFilteredBtn = document.getElementById('swLoadFilteredBtn');
 const swResetFiltersBtn = document.getElementById('swResetFiltersBtn');
 const swipeFilteredStatus = document.getElementById('swipeFilteredStatus');
@@ -1098,8 +1113,10 @@ const addShowsBtn = document.getElementById('addShowsBtn');
 const rankedMoviesWrap = document.getElementById('rankedMoviesWrap');
 const rankedMoviesList = document.getElementById('rankedMoviesList');
 const rankedMoviesSummary = document.getElementById('rankedMoviesSummary');
+const rankClearListBtn = document.getElementById('rankClearListBtn');
 const top50Container = document.getElementById('top50Container');
 const swAddShowsBtn = document.getElementById('swAddShowsBtn');
+const swLoadCsvBtn = document.getElementById('swLoadCsvBtn');
 
 init();
 
@@ -1143,6 +1160,11 @@ function bindEvents() {
   downloadTop50Btn?.addEventListener('click', downloadTop50Image);
   saveStateBtn?.addEventListener('click', saveSnapshot);
   refreshSavesBtn?.addEventListener('click', fetchSaveList);
+  swLoadCsvBtn?.addEventListener('click', loadSwipeCsvList);
+  rankClearListBtn?.addEventListener('click', () => {
+    const t = getT();
+    openConfirmModal(t.clearList, t.clearConfirm, performClearRankList);
+  });
   loadSaveBtn?.addEventListener('click', loadSnapshot);
   applyPersonsBtn?.addEventListener('click', onApplyPersons);
   swAddShowsBtn?.addEventListener('click', addShowsToSwipe);
@@ -1381,7 +1403,7 @@ function applyState(state, preservePair = false, skipPickPair = false) {
 
   updateProgress();
   updateMovieCountLabel();
-  if (moviesChanged && movies.length > 0 && rankedMoviesWrap) rankedMoviesWrap.open = true;
+  // keep ranked list collapsed by default
   renderRankedMoviesList();
   updateComparisonCountText();
   updatePersonProgress();
@@ -1498,6 +1520,43 @@ async function removeRankedMovie(movie) {
   } catch (err) {
     const errPrefix = t.statusRemoveError || t.statusFetchError || '';
     setStatus(errPrefix + err.message);
+  }
+}
+
+async function performClearRankList() {
+  const t = getT();
+  const btn = rankClearListBtn;
+  resultsSection?.classList.add('hidden');
+  voteSection?.classList.add('hidden');
+  try {
+    if (btn) btn.disabled = true;
+    const resp = await fetch(`${API_BASE}/rank-clear`, { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    if (data.state) {
+      applyState(data.state, false, true);
+    } else {
+      movies = [];
+      ratings = {};
+      comparisonCount = persons.reduce((acc, p) => ({ ...acc, [p]: 0 }), {});
+      pairCounts = {};
+      totalVotes = 0;
+      rankerConfirmed = false;
+      pairCoverage = { coveredPairs: 0, totalPairs: 0, ratio: 0 };
+      pairCoveragePerPerson = persons.reduce((acc, p) => ({ ...acc, [p]: { coveredPairs: 0, totalPairs: 0, ratio: 0 } }), {});
+      updateProgress();
+      updateMovieCountLabel();
+      renderRankedMoviesList();
+      updateVoteVisibility(true, true);
+    }
+    currentPair = null;
+    const doneMsg = t.clearDone || '';
+    setStatus(doneMsg);
+  } catch (err) {
+    const prefix = t.statusFetchError || '';
+    setStatus(prefix + err.message);
+  } finally {
+    if (btn) btn.disabled = movies.length === 0;
   }
 }
 
@@ -2285,6 +2344,7 @@ function updateRankedMoviesSummary() {
     if (movies.length === 0) rankedMoviesWrap.open = false;
     rankedMoviesWrap.setAttribute('aria-hidden', movies.length === 0 ? 'true' : 'false');
   }
+  if (rankClearListBtn) rankClearListBtn.disabled = movies.length === 0;
 }
 
 function renderRankedMoviesList() {
@@ -2833,6 +2893,50 @@ async function loadSwipeFilteredList() {
   } catch (err) {
     console.error(err);
     statusHandler(t.statusFetchError + err.message);
+  }
+}
+
+async function loadSwipeCsvList() {
+  const t = getT();
+  const statusHandler = (msg) => {
+    setStatus(msg);
+    if (swipeFilteredStatus) swipeFilteredStatus.textContent = msg;
+  };
+  try {
+    if (swLoadCsvBtn) swLoadCsvBtn.disabled = true;
+    statusHandler(t.statusCsvLoading || t.statusFetching || '');
+    const resp = await fetch(`${API_BASE}/load-csv`, { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    const state = data.state || {};
+    const csvMovies = (state.movies || []).map((m) => ({
+      title: m.title,
+      display: formatTitleWithYear(m),
+      image: m.image || '',
+      imageAbsolute: resolveMovieImage(m),
+      addedBy: swipeCurrentPerson,
+      source: 'auto'
+    }));
+    const manual = swipeSelectedMovies.filter(m => (m.source || 'manual') === 'manual');
+    const existingManual = new Set(manual.map(m => m.title));
+    let autoList = csvMovies.filter(m => !existingManual.has(m.title));
+    if (isFinite(swMaxMovies)) autoList = autoList.slice(0, Math.max(0, swMaxMovies - manual.length));
+    swipeSelectedMovies = manual.concat(autoList);
+    swipeLikes = {};
+    swipeMatches = new Set();
+    resetSwipeProgressAll();
+    applySwipeProgress(swipeCurrentPerson);
+    renderSwipeSelectedMovies();
+    persistSwipeState();
+    const okMsg = t.statusCsvOk || t.statusLoaded || '';
+    if (okMsg) statusHandler(okMsg.replace('{count}', csvMovies.length || state.movies?.length || ''));
+    else statusHandler('');
+  } catch (err) {
+    console.error(err);
+    const prefix = t.statusCsvError || t.statusFetchError || '';
+    statusHandler(prefix + err.message);
+  } finally {
+    if (swLoadCsvBtn) swLoadCsvBtn.disabled = false;
   }
 }
 

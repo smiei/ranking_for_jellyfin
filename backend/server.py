@@ -85,7 +85,7 @@ USER_ID = env.get("JELLYFIN_USER_ID") or server_cfg.get("userId", "")
 TMDB_API_KEY = env.get("TMDB_API_KEY") or server_cfg.get("tmdbApiKey", "")
 TMDB_API_URL = "https://api.themoviedb.org/3"
 OUTPUT_CSV = server_cfg.get("outputCsv", "movies.csv")
-POSTER_DIR = server_cfg.get("posterDir", "images")
+POSTER_DIR_NAME = server_cfg.get("posterDir", "images")
 STATE_FILE = server_cfg.get("stateFile", "state.json")
 SWIPE_STATE_FILE = server_cfg.get("swipeStateFile", "swipe_state.json")
 SERVER_HOST = server_cfg.get("host", "0.0.0.0")
@@ -107,6 +107,29 @@ TS_ENV = trueskill.TrueSkill(
     tau=TS_TAU,
     draw_probability=TS_DRAW_PROB,
 )
+
+
+def resolve_poster_dir(for_write: bool = False) -> Path:
+    """Resolve poster directory, preferring an existing repo-level folder when present."""
+    base = Path(POSTER_DIR_NAME)
+    if base.is_absolute():
+        return base
+    backend_path = ROOT / base
+    project_path = PROJECT_ROOT / base
+    if not for_write:
+        if project_path.is_dir():
+            return project_path
+        if backend_path.is_dir():
+            return backend_path
+    else:
+        if backend_path.is_dir():
+            return backend_path
+        if project_path.is_dir():
+            return project_path
+    return backend_path
+
+
+POSTER_DIR = str(resolve_poster_dir())
 # Expose the active TrueSkill configuration so it can be persisted with state.
 def current_ts_config() -> Dict[str, float]:
     return {
@@ -275,7 +298,7 @@ def create_save_snapshot(name: Optional[str] = None) -> str:
     swipe_path = Path(SWIPE_STATE_FILE)
     if swipe_path.is_file():
         shutil.copy2(swipe_path, dest / swipe_path.name)
-    csv_path = Path(OUTPUT_CSV)
+    csv_path = resolve_output_csv_path()
     if csv_path.is_file():
         shutil.copy2(csv_path, dest / csv_path.name)
     images_path = Path(POSTER_DIR)
@@ -298,7 +321,7 @@ def load_save_snapshot(name: str) -> Dict[str, Any]:
         shutil.copy2(swipe_src, Path(SWIPE_STATE_FILE))
     csv_src = src / Path(OUTPUT_CSV).name
     if csv_src.is_file():
-        shutil.copy2(csv_src, Path(OUTPUT_CSV))
+        shutil.copy2(csv_src, resolve_output_csv_path(for_write=True))
     images_src = src / Path(POSTER_DIR).name
     if images_src.is_dir():
         clear_poster_dir()
@@ -418,6 +441,27 @@ def clear_poster_dir() -> None:
     os.makedirs(POSTER_DIR, exist_ok=True)
 
 
+def resolve_output_csv_path(for_write: bool = False) -> Path:
+    """Resolve the output CSV path, honoring files stored in repo root or backend dir."""
+    base = Path(OUTPUT_CSV)
+    if base.is_absolute():
+        return base
+    backend_path = ROOT / base
+    project_path = PROJECT_ROOT / base
+    # Prefer existing file for reads; for writes, reuse existing location if present.
+    if not for_write:
+        if backend_path.is_file():
+            return backend_path
+        if project_path.is_file():
+            return project_path
+    else:
+        if backend_path.is_file():
+            return backend_path
+        if project_path.is_file():
+            return project_path
+    return backend_path
+
+
 def normalize_image_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
@@ -460,9 +504,9 @@ def match_image_for_title(title: str, lookup: Dict[str, str]) -> Optional[str]:
 
 def load_movies_from_csv() -> Dict[str, Any]:
     """Load titles from CSV and reconstruct baseline ranking state."""
-    path = Path(OUTPUT_CSV)
+    path = resolve_output_csv_path()
     if not path.is_file():
-        raise FileNotFoundError(f"{OUTPUT_CSV} not found")
+        raise FileNotFoundError(f"{path.name} not found")
 
     titles: List[str] = []
     with open(path, newline="", encoding="utf-8") as f:
@@ -834,6 +878,39 @@ def reset_all():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.post("/rank-clear")
+def rank_clear():
+    """Clear the current ranking list while keeping filters and person count."""
+    try:
+        current = normalize_ranking_state(load_state()) or {}
+        person_count = max(1, int(current.get("personCount") or 1))
+        comparison = {f"person{i+1}": 0 for i in range(person_count)}
+        state = {
+            "movies": [],
+            "ratings": {},
+            "comparisonCount": comparison,
+            "totalVotes": 0,
+            "personCount": person_count,
+            "filters": current.get("filters") or [],
+            "runtimeMin": current.get("runtimeMin"),
+            "runtimeMax": current.get("runtimeMax"),
+            "criticMin": current.get("criticMin"),
+            "criticMax": current.get("criticMax"),
+            "yearMin": current.get("yearMin"),
+            "yearMax": current.get("yearMax"),
+            "rankerConfirmed": False,
+            "pairCounts": {},
+            "pairCoverage": {"coveredPairs": 0, "totalPairs": 0, "ratio": 0},
+            "pairCoveragePerPerson": {},
+            "tsConfig": {**current_ts_config(), **(current.get("tsConfig") or {})},
+        }
+        compute_pair_coverage(state)
+        save_state(state)
+        return jsonify({"ok": True, "state": state})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.post("/swipe-action")
 def swipe_action():
     data = request.get_json(silent=True) or {}
@@ -924,7 +1001,8 @@ def generate():
         if max_movies > 0 and len(movies_raw) > max_movies:
             movies_raw = random.sample(movies_raw, max_movies)
         # CSV speichern
-        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+        csv_path = resolve_output_csv_path(for_write=True)
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["title"])
             for item in movies_raw:

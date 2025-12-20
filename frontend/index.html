@@ -108,7 +108,10 @@
             </div>
 
             <div class="field-group max-movies-group">
-              <label for="rankMaxMovies">Max (0 is all)</label>
+              <label for="rankMaxMovies" class="label-with-help">
+                <span id="rankMaxMoviesLabel">Max (0 is all)</span>
+                <span id="rankMaxMoviesInfo" class="info-icon" role="img" aria-label="" tabindex="0">?</span>
+              </label>
               <input type="number" id="rankMaxMovies" class="max-movies-input" min="0" value="0">
             </div>
 
@@ -145,6 +148,9 @@
 
           <details class="card nested" id="rankedMoviesWrap">
             <summary id="rankedMoviesSummary">Geladene Liste</summary>
+            <div class="tag-list-actions">
+              <button id="rankClearListBtn" class="btn secondary small" type="button">Liste leeren</button>
+            </div>
             <div id="rankedMoviesList" class="tag-list"></div>
           </details>
         </section>
@@ -322,7 +328,10 @@
                 </div>
 
                 <div class="field-group">
-                  <label for="swMaxMovies">Max (0 is all)</label>
+                  <label for="swMaxMovies" class="label-with-help">
+                    <span id="swMaxMoviesLabel">Max (0 is all)</span>
+                    <span id="swMaxMoviesInfo" class="info-icon" role="img" aria-label="" tabindex="0">?</span>
+                  </label>
                   <input type="number" id="swMaxMovies" min="0" value="0">
                 </div>
 
@@ -353,6 +362,7 @@
             </details>
             <div class="actions split">
               <button id="confirmSwipeBtn" class="btn primary" type="button">Confirm</button>
+              <button id="swLoadCsvBtn" class="btn secondary" type="button">CSV laden</button>
               <button id="swClearListBtn" class="btn secondary" type="button">Liste leeren</button>
             </div>
             <div class="field-group">

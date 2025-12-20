@@ -508,7 +508,7 @@ def load_movies_from_csv() -> Dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"{path.name} not found")
 
-    titles: List[str] = []
+    entries: List[Tuple[str, Optional[int]]] = []
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         for idx, row in enumerate(reader):
@@ -517,22 +517,28 @@ def load_movies_from_csv() -> Dict[str, Any]:
             title = (row[0] or "").strip()
             if idx == 0 and title.lower() == "title":
                 continue
+            runtime_val: Optional[int] = None
+            if len(row) > 1 and row[1]:
+                try:
+                    runtime_val = int(float(row[1]))
+                except Exception:
+                    runtime_val = None
             if title:
-                titles.append(title)
+                entries.append((title, runtime_val))
 
-    if not titles:
+    if not entries:
         raise ValueError("CSV enthaelt keine Titel")
 
     image_lookup = build_image_lookup()
     seen: Set[str] = set()
     movies: List[Dict[str, Any]] = []
-    for title in titles:
+    for title, runtime in entries:
         key = title.lower()
         if key in seen:
             continue
         seen.add(key)
         image = match_image_for_title(title, image_lookup) or ""
-        movies.append({"title": title, "display": title, "image": image, "source": "csv"})
+        movies.append({"title": title, "display": title, "image": image, "runtimeMinutes": runtime, "source": "csv"})
 
     ratings = base_ratings_from_movies(movies)
     existing_state = load_state() or {}
@@ -566,6 +572,16 @@ def minutes_to_ticks(val: Optional[float]) -> Optional[int]:
         return None
     try:
         return int(float(val) * 60 * 10_000_000)
+    except Exception:
+        return None
+
+
+def ticks_to_minutes(ticks: Optional[int]) -> Optional[int]:
+    """Convert Jellyfin ticks (100ns units) to whole minutes."""
+    if ticks is None:
+        return None
+    try:
+        return int(round(float(ticks) / 10_000_000 / 60))
     except Exception:
         return None
 
@@ -1004,7 +1020,7 @@ def generate():
         csv_path = resolve_output_csv_path(for_write=True)
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["title"])
+            w.writerow(["title", "runtimeMinutes"])
             for item in movies_raw:
                 raw_title = item.get("Name", "Unbenannt")
                 file_title = sanitize_filename(raw_title)
@@ -1013,7 +1029,8 @@ def generate():
                     translated = resolve_tmdb_title(tmdb_session, item, lang)
                     if translated:
                         display_title = sanitize_filename(translated)
-                w.writerow([display_title])
+                runtime_minutes = ticks_to_minutes(item.get("RunTimeTicks"))
+                w.writerow([display_title, runtime_minutes if runtime_minutes is not None else ""])
 
         # Poster laden
         session = requests.Session()
@@ -1031,7 +1048,14 @@ def generate():
                 if translated:
                     display_title = sanitize_filename(translated)
             year = item.get("ProductionYear")
-            movie_list.append({"title": display_title, "display": display_title, "image": file_title + ".jpg", "year": year})
+            runtime_minutes = ticks_to_minutes(item.get("RunTimeTicks"))
+            movie_list.append({
+                "title": display_title,
+                "display": display_title,
+                "image": file_title + ".jpg",
+                "year": year,
+                "runtimeMinutes": runtime_minutes,
+            })
 
         ratings = base_ratings_from_movies(movie_list)
         state = {

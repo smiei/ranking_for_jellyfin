@@ -1098,6 +1098,8 @@ const leftImage = document.getElementById('leftImage');
 const rightImage = document.getElementById('rightImage');
 const leftTitleEl = document.getElementById('leftTitle');
 const rightTitleEl = document.getElementById('rightTitle');
+const leftRuntimeEl = document.getElementById('leftRuntime');
+const rightRuntimeEl = document.getElementById('rightRuntime');
 const swipeProgressEl = document.getElementById('swipeProgress');
 const swipeProgressLabel = document.getElementById('swipeProgressLabel');
 const swipeProgressBar = document.getElementById('swipeProgressBar');
@@ -1853,6 +1855,16 @@ function renderPair() {
   const rightLabel = right.display || getDisplayTitle(right.title);
   leftTitleEl.textContent = leftLabel;
   rightTitleEl.textContent = rightLabel;
+  const leftRuntime = formatRuntime(left.runtimeMinutes);
+  const rightRuntime = formatRuntime(right.runtimeMinutes);
+  if (leftRuntimeEl) {
+    leftRuntimeEl.textContent = leftRuntime;
+    leftRuntimeEl.classList.toggle('hidden', !leftRuntime);
+  }
+  if (rightRuntimeEl) {
+    rightRuntimeEl.textContent = rightRuntime;
+    rightRuntimeEl.classList.toggle('hidden', !rightRuntime);
+  }
   leftImage.src = resolveMovieImage(left);
   leftImage.alt = leftLabel;
   rightImage.src = resolveMovieImage(right);
@@ -1907,7 +1919,18 @@ function normalizeMovieImage(movie) {
     filename = img.split('/').pop() || img;
   }
   const imageAbsolute = resolveMovieImage({ image: filename });
-  return { ...movie, image: filename, imageAbsolute, source: movie?.source || 'manual' };
+  const runtimeMinutes = movie?.runtimeMinutes !== undefined ? parseInt(movie.runtimeMinutes, 10) : undefined;
+  return { ...movie, image: filename, imageAbsolute, source: movie?.source || 'manual', runtimeMinutes };
+}
+
+function formatRuntime(minutes) {
+  const m = parseInt(minutes, 10);
+  if (isNaN(m) || m <= 0) return '';
+  const hours = Math.floor(m / 60);
+  const mins = m % 60;
+  if (hours && mins) return `${hours}h ${mins}m`;
+  if (hours) return `${hours}h`;
+  return `${mins}m`;
 }
 
 function fillTable(tableEl, headers, rows) {

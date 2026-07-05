@@ -441,6 +441,18 @@ def clear_poster_dir() -> None:
     os.makedirs(POSTER_DIR, exist_ok=True)
 
 
+def build_poster_url(item: Dict[str, Any]) -> str:
+    """Return a direct Jellyfin poster URL for an item without downloading."""
+    image_tags = item.get("ImageTags") or {}
+    tag = image_tags.get("Primary")
+    item_id = item.get("Id") or item.get("SeriesId")
+    if not item_id:
+        return ""
+    if tag:
+        return f"{JELLYFIN_URL}/Items/{item_id}/Images/Primary?tag={tag}&format=jpg&X-Emby-Token={API_KEY}"
+    return f"{JELLYFIN_URL}/Items/{item_id}/Images/Primary?format=jpg&X-Emby-Token={API_KEY}"
+
+
 def resolve_output_csv_path(for_write: bool = False) -> Path:
     """Resolve the output CSV path, honoring files stored in repo root or backend dir."""
     base = Path(OUTPUT_CSV)
@@ -625,7 +637,7 @@ def fetch_movies(filters: List[str], runtime_min=None, runtime_max=None, critic_
         "SortBy": "SortName",
         "SortOrder": "Ascending",
         "Limit": limit,
-        "Fields": "RunTimeTicks,ProviderIds,OriginalTitle",
+        "Fields": "RunTimeTicks,ProviderIds,OriginalTitle,ImageTags,ProductionYear",
         # Community Rating
         "MinCommunityRating": critic_min,
         "MaxCommunityRating": critic_max,
@@ -691,8 +703,10 @@ def fetch_shows(limit: int = 10000) -> List[Dict[str, Any]]:
 
 def download_poster(session, item):
     """Download a poster for a Jellyfin item if missing locally."""
-    movie_id = item["Id"]
-    title = sanitize_filename(item.get("Name", "Unbenannt"))
+    movie_id = item.get("Id") or item.get("SeriesId")
+    if not movie_id:
+        return
+    title = sanitize_filename(item.get("Name") or item.get("SeriesName") or "Unbenannt")
     image_tags = item.get("ImageTags", {})
     tag = image_tags.get("Primary")
     out_path = os.path.join(POSTER_DIR, f"{title}.jpg")
@@ -1025,10 +1039,17 @@ def generate():
         tmdb_session = requests.Session()
         tmdb_session.params = {"api_key": tmdb_key}
     try:
-        clear_poster_dir()
         movies_raw = fetch_movies(filters, runtime_min, runtime_max, critic_min, critic_max, year_min, year_max)
         if max_movies > 0 and len(movies_raw) > max_movies:
             movies_raw = random.sample(movies_raw, max_movies)
+        poster_session = requests.Session()
+        if API_KEY:
+            poster_session.headers.update({"X-Emby-Token": API_KEY})
+        for item in movies_raw:
+            try:
+                download_poster(poster_session, item)
+            except Exception:
+                pass
         # CSV speichern
         csv_path = resolve_output_csv_path(for_write=True)
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -1050,12 +1071,6 @@ def generate():
                     community_rating if community_rating is not None else "",
                 ])
 
-        # Poster laden
-        session = requests.Session()
-        session.headers.update({"X-Emby-Token": API_KEY})
-        for item in movies_raw:
-            download_poster(session, item)
-
         movie_list = []
         for item in movies_raw:
             raw_title = item.get("Name", "Unbenannt")
@@ -1072,6 +1087,7 @@ def generate():
                 "title": display_title,
                 "display": display_title,
                 "image": file_title + ".jpg",
+                "imageAbsolute": build_poster_url(item),
                 "year": year,
                 "runtimeMinutes": runtime_minutes,
                 "rating": community_rating,
@@ -1138,8 +1154,9 @@ def add_shows():
         existing_titles = set()
         existing_ids = set()
         movies_raw = fetch_shows()
-        session = requests.Session()
-        session.headers.update({"X-Emby-Token": API_KEY})
+        poster_session = requests.Session()
+        if API_KEY:
+            poster_session.headers.update({"X-Emby-Token": API_KEY})
         added = 0
         for item in movies_raw:
             item_type = (item.get("Type") or "").lower()
@@ -1155,17 +1172,21 @@ def add_shows():
                 continue
             if not file_title or file_title in existing_titles:
                 continue
+            try:
+                download_poster(poster_session, item)
+            except Exception:
+                pass
             display_title = file_title
             if translate_titles and tmdb_session:
                 translated = resolve_tmdb_title(tmdb_session, item, lang)
                 if translated:
                     display_title = sanitize_filename(translated)
             year = item.get("ProductionYear")
-            download_poster(session, item)
             entry = {
                 "title": file_title,
                 "display": display_title,
                 "image": f"{file_title}.jpg",
+                "imageAbsolute": build_poster_url(item),
                 "year": year,
                 "rating": item.get("CommunityRating"),
                 "jellyfinId": jellyfin_id,

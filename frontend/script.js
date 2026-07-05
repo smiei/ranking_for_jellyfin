@@ -53,7 +53,9 @@ let titleLanguage = '';
 let translations = {};
 let languageDefaults = {};
 let languageConfigLoaded = false;
+const movieImageCache = {};
 const DEBUG_SWIPE_FILTER = true;
+const DEBUG_SWIPE_SYNC = false;
 const GAMEPAD_DEADZONE = 0.25;
 const GAMEPAD_BUTTONS = { A: 0, B: 1, START: 9, DPAD_UP: 12, DPAD_DOWN: 13, DPAD_LEFT: 14, DPAD_RIGHT: 15 };
 let controllerNav = null;
@@ -1926,15 +1928,33 @@ function getDisplayTitle(title) {
 }
 
 function normalizeMovieImage(movie) {
-  const img = movie?.image || movie?.imageAbsolute || '';
-  let filename = img;
-  if (/^https?:/i.test(img)) {
-    filename = img.split('/').pop() || img;
-  }
-  const imageAbsolute = resolveMovieImage({ image: filename });
   const runtimeMinutes = movie?.runtimeMinutes !== undefined ? parseInt(movie.runtimeMinutes, 10) : undefined;
   const rating = movie?.rating !== undefined ? parseFloat(movie.rating) : undefined;
-  return { ...movie, image: filename, imageAbsolute, source: movie?.source || 'manual', runtimeMinutes, rating };
+  const rawImage = (movie?.image || '').toString().trim();
+  const rawAbsolute = (movie?.imageAbsolute || '').toString().trim();
+  const isUrl = (val) => /^https?:|^data:/i.test(val);
+
+  let image = rawImage;
+  let imageAbsolute = '';
+
+  if (isUrl(rawAbsolute)) {
+    imageAbsolute = rawAbsolute;
+    if (!image) image = rawAbsolute;
+  } else if (isUrl(rawImage)) {
+    imageAbsolute = rawImage;
+  }
+
+  if (!image) image = rawAbsolute || rawImage;
+  if (!image && movie?.title) image = defaultImageName(movie.title);
+
+  if (!imageAbsolute) {
+    const filename = image || (movie?.title ? defaultImageName(movie.title) : '');
+    imageAbsolute = resolveMovieImage({ image: filename });
+    // Prefer filename for local posters when we had no absolute URL
+    if (!image || isUrl(image)) image = filename;
+  }
+
+  return { ...movie, image, imageAbsolute, source: movie?.source || 'manual', runtimeMinutes, rating };
 }
 
 function formatRuntime(minutes) {
@@ -1952,6 +1972,69 @@ function formatRating(val) {
   const num = parseFloat(val);
   if (isNaN(num)) return '';
   return num.toFixed(1);
+}
+
+function defaultImageName(title) {
+  const safe = (title || '').replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  return safe ? `${safe}.jpg` : '';
+}
+
+function sanitizeKey(text) {
+  return (text || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function findImageInSuggestions(title) {
+  const key = sanitizeKey(title);
+  const match = swipeSuggestions.find(s => sanitizeKey(s.display || s.title) === key);
+  if (match?.image) return match.image;
+  return null;
+}
+
+let moviesCatalogCache = null;
+async function getMoviesCatalog() {
+  if (moviesCatalogCache) return moviesCatalogCache;
+  try {
+    const params = new URLSearchParams();
+    params.set('lang', titleLanguage || 'en');
+    const resp = await fetch(`${API_BASE}/movies?${params.toString()}`);
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data.ok) {
+      moviesCatalogCache = data.items || [];
+      return moviesCatalogCache;
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  moviesCatalogCache = [];
+  return moviesCatalogCache;
+}
+
+async function ensureMovieImage(movie) {
+  if (!movie || movie.imageAbsolute) return;
+  const cacheKey = sanitizeKey(movie.title || movie.display || '');
+  if (cacheKey && movieImageCache[cacheKey]) {
+    movie.imageAbsolute = movieImageCache[cacheKey];
+    return;
+  }
+  const suggestionImg = findImageInSuggestions(movie.title || movie.display);
+  if (suggestionImg) {
+    movie.image = suggestionImg;
+    movie.imageAbsolute = suggestionImg;
+    if (cacheKey) movieImageCache[cacheKey] = suggestionImg;
+    return;
+  }
+  const catalog = await getMoviesCatalog();
+  const match = catalog.find(item => sanitizeKey(item.title || item.display) === cacheKey);
+  if (match?.image) {
+    movie.image = match.image;
+    movie.imageAbsolute = match.image;
+    if (cacheKey) movieImageCache[cacheKey] = match.image;
+  }
+}
+
+async function ensureSwipeImages(list = swipeSelectedMovies) {
+  const promises = (list || []).map(m => ensureMovieImage(m));
+  await Promise.all(promises);
 }
 
 function fillTable(tableEl, headers, rows) {
@@ -2454,20 +2537,23 @@ function closeMatchModal() {
   processMatchQueue();
 }
 
-function addSwipeMovie(displayTitle) {
+async function addSwipeMovie(displayTitle) {
   if (!displayTitle) return;
   const info = swipeSuggestionsMap[displayTitle] || { title: displayTitle };
   if (swipeSelectedMovies.find(m => m.title === info.title)) return;
+  const fallbackImage = defaultImageName(info.title || displayTitle);
+  const resolvedImage = info.image || fallbackImage;
   const movieObj = {
     title: info.title,
     display: info.display || displayTitle,
-    image: info.image || '',
-    imageAbsolute: info.image && /^https?:/.test(info.image) ? info.image : '',
+    image: resolvedImage,
+    imageAbsolute: (info.image && /^https?:/.test(info.image)) ? info.image : resolveMovieImage({ image: resolvedImage }),
     addedBy: swipeCurrentPerson,
     source: 'manual'
   };
   swipeSelectedMovies.push(movieObj);
   swipeLikes[info.title] = swipeLikes[info.title] || [];
+  await ensureMovieImage(movieObj);
   resetSwipeProgressAll();
   renderSwipeSelectedMovies();
   updateSwipeCard();
@@ -2666,7 +2752,25 @@ function normalizeSwipeProgress(progress, persons, titles) {
 
 function applySwipeStateFromServer(state) {
   const prevMatches = new Set(swipeMatches);
-  swipeSelectedMovies = (state.movies || []).map(normalizeMovieImage);
+  const mergeFn = globalThis.SwipeMerge?.mergeSwipeMovie;
+  const logPreserve = DEBUG_SWIPE_SYNC ? (field, prev, incoming) => {
+    console.warn('[swipe] preserved image field', {
+      field,
+      title: prev?.title,
+      previous: prev?.[field],
+      incoming: incoming?.[field]
+    });
+  } : null;
+  const previousByTitle = new Map((swipeSelectedMovies || []).map(m => [m?.title, m]));
+  swipeSelectedMovies = (state.movies || []).map((incoming) => {
+    if (!incoming) return normalizeMovieImage(incoming);
+    const title = incoming.title;
+    const prev = title ? previousByTitle.get(title) : null;
+    const merged = prev && mergeFn
+      ? mergeFn(prev, incoming, logPreserve ? { onPreserve: logPreserve } : undefined)
+      : (prev ? { ...prev, ...incoming } : incoming);
+    return normalizeMovieImage(merged);
+  });
   swipePersons = (state.persons && state.persons.length ? state.persons : swipePersons.length ? swipePersons : ['p1', 'p2']);
   swipePersonCount = swipePersons.length || 2;
   swipeLikes = state.likes || {};
@@ -2749,6 +2853,7 @@ async function confirmRankerSetup() {
 async function confirmSwipeSetup() {
   swipeLikes = {};
   swipeMatches = new Set();
+  await ensureSwipeImages();
   resetSwipeProgressAll();
   applySwipeProgress(swipeCurrentPerson);
   renderSwiperPersonButtons();
@@ -3191,10 +3296,26 @@ function setupHeaderButtons() {
   });
 }
 
+function isLocalHostUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
 function resolveMovieImage(movie) {
   if (!movie) return '';
-  const candidate = movie.imageAbsolute || movie.image || '';
-  if (/^https?:|^data:/.test(candidate)) return candidate;
+  const image = movie.image || '';
+  const imageAbsolute = movie.imageAbsolute || '';
+  const imageIsUrl = /^https?:|^data:/i.test(image);
+  const absIsUrl = /^https?:|^data:/i.test(imageAbsolute);
+  if (!imageIsUrl && image && absIsUrl && isLocalHostUrl(imageAbsolute)) {
+    return `${API_BASE}/images/${image}`;
+  }
+  const candidate = imageAbsolute || image || '';
+  if (/^https?:|^data:/i.test(candidate)) return candidate;
   if (!candidate) return '';
   return `${API_BASE}/images/${candidate}`;
 }
